@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment variables
+.env
+.env.*
+
+# Uploads
+uploads/
+
+# Logs
+*.log
+
+# Test scripts
+test-api.ts
+test-lookups.ts
+check-routes.ts
+
+# IDE files
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
