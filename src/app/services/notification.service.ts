@@ -30,3 +30,10 @@ export async function markRead(id: string, userId: string): Promise<void> {
 export async function markAllRead(userId: string): Promise<void> {
   await notificationModel.markAllRead(userId);
 }
+
+/**
+ * DELETE /notifications
+ */
+export async function clearAllNotifications(userId: string): Promise<void> {
+  await notificationModel.deleteAll(userId);
+}

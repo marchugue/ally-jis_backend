@@ -60,3 +60,16 @@ export async function markAllRead(userId: string): Promise<void> {
 
   if (error) throw error;
 }
+
+/**
+ * DELETE /notifications
+ * Deletes all notifications for a user.
+ */
+export async function deleteAll(userId: string): Promise<void> {
+  const { error } = await supabaseAdmin
+    .from('notifications')
+    .delete()
+    .eq('user_id', userId);
+
+  if (error) throw error;
+}

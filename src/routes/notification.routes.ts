@@ -29,4 +29,7 @@ router.get('/', notificationController.list);
 // PATCH /api/notifications/:id/read
 router.patch('/:id/read', notificationController.markRead);
 
+// DELETE /api/notification/
+router.delete('/', notificationController.clearAll);
+
 export default router;

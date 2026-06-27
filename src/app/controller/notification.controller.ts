@@ -34,3 +34,9 @@ export const markAllRead = asyncHandler(async (req: Request, res: Response) => {
   await notificationService.markAllRead(req.userId as string);
   res.status(204).send();
 });
+
+// DELETE /notifications
+export const clearAll = asyncHandler(async (req: Request, res: Response) => {
+  await notificationService.clearAllNotifications(req.userId as string);
+  res.status(204).send();
+});
