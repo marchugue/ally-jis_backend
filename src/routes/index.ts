@@ -9,6 +9,7 @@ import notificationRoutes from './notification.routes';
 import mediaRoutes from './media.routes';
 import presenceRoutes from './presence.routes';
 import feedRoutes from './feed.routes';
+import moderationRoutes from './moderation.routes';
 
 const router = Router();
 
@@ -22,5 +23,6 @@ router.use('/notifications', notificationRoutes);
 router.use('/media', mediaRoutes);
 router.use('/presence', presenceRoutes);
 router.use('/feed', feedRoutes);
+router.use('/moderation', moderationRoutes);
 
 export default router;

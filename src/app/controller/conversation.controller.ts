@@ -8,7 +8,7 @@
 import type { Request, Response } from 'express';
 import * as conversationService from '../services/conversation.service';
 import { asyncHandler } from '../utils/asyncHandler';
-import type { CreateConversationPayload, MarkReadPayload, SendMessagePayload } from '../types/conversation.types';
+import type { CreateConversationPayload, MarkReadPayload, SendMessagePayload, UpdateIcebreakersPayload } from '../types/conversation.types';
 
 // GET /conversations
 export const list = asyncHandler(async (req: Request, res: Response) => {
@@ -61,14 +61,30 @@ export const listMessages = asyncHandler(async (req: Request, res: Response) => 
 // POST /conversations/:id/messages
 export const sendMessage = asyncHandler(async (req: Request, res: Response) => {
   const id = String(req.params.id);
-  const { content, imageUrl } = req.body as SendMessagePayload;
+  const { content, imageUrl, replyToMessageId } = req.body as SendMessagePayload;
 
   const message = await conversationService.sendMessage({
     conversationId: id,
     senderId: req.userId as string,
     content: content ?? null,
     imageUrl,
+    replyToMessageId: replyToMessageId ?? null,
   });
 
   res.status(201).json(message);
+});
+
+// PATCH /conversations/:id/icebreakers
+export const updateIcebreakersEnabled = asyncHandler(async (req: Request, res: Response) => {
+  const id = String(req.params.id);
+  const { enabled } = req.body as UpdateIcebreakersPayload;
+  await conversationService.setIcebreakersEnabled(id, req.userId as string, enabled);
+  res.status(204).send();
+});
+
+// GET /conversations/:id/icebreakers
+export const getIcebreakersEnabled = asyncHandler(async (req: Request, res: Response) => {
+  const id = String(req.params.id);
+  const data = await conversationService.getIcebreakersEnabled(id, req.userId as string);
+  res.status(200).json({ data });
 });

@@ -41,4 +41,10 @@ router.get('/:id/messages', conversationController.listMessages);
 // POST /api/conversations/:id/messages
 router.post('/:id/messages', conversationController.sendMessage);
 
+// PATCH /api/conversations/:id/icebreakers
+router.patch('/:id/icebreakers', conversationController.updateIcebreakersEnabled);
+
+// GET /api/conversations/:id/icebreakers
+router.get('/:id/icebreakers', conversationController.getIcebreakersEnabled);
+
 export default router;

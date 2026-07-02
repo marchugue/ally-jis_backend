@@ -47,7 +47,7 @@ export async function findConversationsByIds(conversationIds: string[]): Promise
     .select(
       `id, updated_at,
        messages ( id, conversation_id, sender_id, content, image_url, created_at ),
-       conversation_members ( conversation_id, user_id, last_read_at, profiles (${MEMBER_PROFILE_COLUMNS}) )`
+       conversation_members ( conversation_id, user_id, last_read_at, icebreakers_enabled, profiles (${MEMBER_PROFILE_COLUMNS}) )`
     )
     .in('id', conversationIds)
     .order('updated_at', { ascending: false });
@@ -136,15 +136,50 @@ export async function findMembershipsForUser(
 /**
  * GET /conversations/:id/messages
  */
+async function attachRepliedMessages(messages: MessageRow[]): Promise<MessageRow[]> {
+  const replyIds = [
+    ...new Set(messages.map((message) => message.reply_to_message_id).filter(Boolean)),
+  ] as string[];
+
+  if (replyIds.length === 0) return messages;
+
+  const { data: replies, error } = await supabaseAdmin
+    .from('messages')
+    .select('id, sender_id, content, image_url')
+    .in('id', replyIds);
+
+  if (error) throw error;
+
+  const replyById = new Map((replies ?? []).map((reply) => [reply.id as string, reply]));
+
+  return messages.map((message) => ({
+    ...message,
+    replied_message: message.reply_to_message_id
+      ? (replyById.get(message.reply_to_message_id) as MessageRow['replied_message']) ?? null
+      : null,
+  }));
+}
+
 export async function findMessagesByConversation(conversationId: string): Promise<MessageRow[]> {
   const { data, error } = await supabaseAdmin
     .from('messages')
-    .select('id, conversation_id, sender_id, content, image_url, created_at')
+    .select('id, conversation_id, sender_id, content, image_url, created_at, reply_to_message_id')
     .eq('conversation_id', conversationId)
     .order('created_at', { ascending: true });
 
   if (error) throw error;
-  return (data as MessageRow[]) ?? [];
+  return attachRepliedMessages((data as MessageRow[]) ?? []);
+}
+
+export async function findMessageById(messageId: string): Promise<MessageRow | null> {
+  const { data, error } = await supabaseAdmin
+    .from('messages')
+    .select('id, conversation_id, sender_id, content, image_url, created_at, reply_to_message_id')
+    .eq('id', messageId)
+    .maybeSingle();
+
+  if (error) throw error;
+  return (data as MessageRow | null) ?? null;
 }
 
 /**
@@ -155,8 +190,9 @@ export async function insertMessage(input: {
   senderId: string;
   content: string | null;
   imageUrl?: string | null;
+  replyToMessageId?: string | null;
 }): Promise<MessageRow> {
-  const { conversationId, senderId, content, imageUrl } = input;
+  const { conversationId, senderId, content, imageUrl, replyToMessageId } = input;
 
   const { data, error } = await supabaseAdmin
     .from('messages')
@@ -165,12 +201,14 @@ export async function insertMessage(input: {
       sender_id: senderId,
       content,
       image_url: imageUrl ?? null,
+      reply_to_message_id: replyToMessageId ?? null,
     })
-    .select('id, conversation_id, sender_id, content, image_url, created_at')
+    .select('id, conversation_id, sender_id, content, image_url, created_at, reply_to_message_id')
     .single();
 
   if (error) throw error;
-  return data as MessageRow;
+  const [message] = await attachRepliedMessages([data as MessageRow]);
+  return message;
 }
 
 /**
@@ -220,6 +258,28 @@ export async function createMessageNotification(input: {
   });
 
   if (error) throw error;
+}
+
+export async function updateIcebreakersEnabled(conversationId: string, userId: string, enabled: boolean): Promise<void> {
+  const { error } = await supabaseAdmin
+    .from('conversation_members')
+    .update({ icebreakers_enabled: enabled })
+    .eq('conversation_id', conversationId)
+    .eq('user_id', userId);
+
+  if (error) throw error;
+}
+
+export async function geticebreakersEnabled(conversationId: string, userId: string): Promise<boolean | null> {
+  const { data, error } = await supabaseAdmin
+    .from('conversation_members')
+    .select('icebreakers_enabled')
+    .eq('conversation_id', conversationId)
+    .eq('user_id', userId)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data?.icebreakers_enabled ?? null;
 }
 
 export type { ConversationMemberRow };
