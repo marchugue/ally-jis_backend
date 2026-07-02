@@ -1,5 +1,5 @@
 import { supabaseAdmin } from '../../config/supabase';
-import type { ConversationMemberRow, ConversationRow, MessageRow } from '../types/conversation.types';
+import type { ConversationMemberRow, ConversationRow, MessageReactionRow, MessageRow } from '../types/conversation.types';
 
 const MEMBER_PROFILE_COLUMNS = 'id, full_name, username, avatar_url, interests';
 
@@ -160,6 +160,39 @@ async function attachRepliedMessages(messages: MessageRow[]): Promise<MessageRow
   }));
 }
 
+async function attachReactions(messages: MessageRow[]): Promise<MessageRow[]> {
+  const messageIds = messages.map((message) => message.id);
+  if (messageIds.length === 0) return messages;
+
+  const { data, error } = await supabaseAdmin
+    .from('message_reactions')
+    .select('message_id, user_id, emoji')
+    .in('message_id', messageIds);
+
+  if (error) throw error;
+
+  const reactionsByMessage = new Map<string, MessageRow['reactions']>();
+  for (const row of data ?? []) {
+    const bucket = reactionsByMessage.get(row.message_id as string) ?? [];
+    bucket.push({
+      message_id: row.message_id as string,
+      user_id: row.user_id as string,
+      emoji: row.emoji as string,
+    });
+    reactionsByMessage.set(row.message_id as string, bucket);
+  }
+
+  return messages.map((message) => ({
+    ...message,
+    reactions: reactionsByMessage.get(message.id) ?? [],
+  }));
+}
+
+async function attachMessageMetadata(messages: MessageRow[]): Promise<MessageRow[]> {
+  const withReplies = await attachRepliedMessages(messages);
+  return attachReactions(withReplies);
+}
+
 export async function findMessagesByConversation(conversationId: string): Promise<MessageRow[]> {
   const { data, error } = await supabaseAdmin
     .from('messages')
@@ -168,7 +201,7 @@ export async function findMessagesByConversation(conversationId: string): Promis
     .order('created_at', { ascending: true });
 
   if (error) throw error;
-  return attachRepliedMessages((data as MessageRow[]) ?? []);
+  return attachMessageMetadata((data as MessageRow[]) ?? []);
 }
 
 export async function findMessageById(messageId: string): Promise<MessageRow | null> {
@@ -207,7 +240,7 @@ export async function insertMessage(input: {
     .single();
 
   if (error) throw error;
-  const [message] = await attachRepliedMessages([data as MessageRow]);
+  const [message] = await attachMessageMetadata([data as MessageRow]);
   return message;
 }
 
@@ -280,6 +313,41 @@ export async function geticebreakersEnabled(conversationId: string, userId: stri
 
   if (error) throw error;
   return data?.icebreakers_enabled ?? null;
+}
+
+export async function setMessageReaction(input: {
+  messageId: string;
+  userId: string;
+  emoji: string | null;
+}): Promise<MessageReactionRow[]> {
+  const { messageId, userId, emoji } = input;
+
+  if (emoji === null) {
+    const { error } = await supabaseAdmin
+      .from('message_reactions')
+      .delete()
+      .eq('message_id', messageId)
+      .eq('user_id', userId);
+
+    if (error) throw error;
+  } else {
+    const { error } = await supabaseAdmin
+      .from('message_reactions')
+      .upsert(
+        { message_id: messageId, user_id: userId, emoji },
+        { onConflict: 'message_id,user_id' },
+      );
+
+    if (error) throw error;
+  }
+
+  const { data, error: fetchError } = await supabaseAdmin
+    .from('message_reactions')
+    .select('message_id, user_id, emoji')
+    .eq('message_id', messageId);
+
+  if (fetchError) throw fetchError;
+  return (data as MessageReactionRow[]) ?? [];
 }
 
 export type { ConversationMemberRow };

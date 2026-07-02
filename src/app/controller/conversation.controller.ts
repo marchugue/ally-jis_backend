@@ -8,7 +8,7 @@
 import type { Request, Response } from 'express';
 import * as conversationService from '../services/conversation.service';
 import { asyncHandler } from '../utils/asyncHandler';
-import type { CreateConversationPayload, MarkReadPayload, SendMessagePayload, UpdateIcebreakersPayload } from '../types/conversation.types';
+import type { CreateConversationPayload, MarkReadPayload, SendMessagePayload, SetMessageReactionPayload, UpdateIcebreakersPayload } from '../types/conversation.types';
 
 // GET /conversations
 export const list = asyncHandler(async (req: Request, res: Response) => {
@@ -87,4 +87,20 @@ export const getIcebreakersEnabled = asyncHandler(async (req: Request, res: Resp
   const id = String(req.params.id);
   const data = await conversationService.getIcebreakersEnabled(id, req.userId as string);
   res.status(200).json({ data });
+});
+
+// PUT /conversations/:id/messages/:messageId/reactions
+export const setMessageReaction = asyncHandler(async (req: Request, res: Response) => {
+  const conversationId = String(req.params.id);
+  const messageId = String(req.params.messageId);
+  const { emoji } = req.body as SetMessageReactionPayload;
+
+  const reactions = await conversationService.setMessageReaction({
+    conversationId,
+    messageId,
+    userId: req.userId as string,
+    emoji: emoji ?? null,
+  });
+
+  res.status(200).json(reactions);
 });

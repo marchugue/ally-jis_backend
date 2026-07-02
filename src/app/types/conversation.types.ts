@@ -7,6 +7,12 @@ export interface MessageReplyRow {
   image_url?: string | null;
 }
 
+export interface MessageReactionRow {
+  message_id: string;
+  user_id: string;
+  emoji: string;
+}
+
 export interface MessageRow {
   id: string;
   conversation_id: string;
@@ -16,6 +22,7 @@ export interface MessageRow {
   created_at: string;
   reply_to_message_id?: string | null;
   replied_message?: MessageReplyRow | MessageReplyRow[] | null;
+  reactions?: MessageReactionRow[];
 }
 
 export interface ConversationMemberRow {
@@ -73,3 +80,6 @@ export interface UpdateIcebreakersPayload {
   enabled: boolean;
 }
 
+export interface SetMessageReactionPayload {
+  emoji: string | null;
+}

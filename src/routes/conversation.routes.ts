@@ -41,6 +41,9 @@ router.get('/:id/messages', conversationController.listMessages);
 // POST /api/conversations/:id/messages
 router.post('/:id/messages', conversationController.sendMessage);
 
+// PUT /api/conversations/:id/messages/:messageId/reactions
+router.put('/:id/messages/:messageId/reactions', conversationController.setMessageReaction);
+
 // PATCH /api/conversations/:id/icebreakers
 router.patch('/:id/icebreakers', conversationController.updateIcebreakersEnabled);
 

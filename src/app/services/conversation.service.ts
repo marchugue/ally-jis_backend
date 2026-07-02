@@ -7,6 +7,7 @@ import type {
   ConversationMembershipRow,
   ConversationRow,
   ConversationWithUserResponse,
+  MessageReactionRow,
   MessageRow,
 } from '../types/conversation.types';
 
@@ -253,3 +254,30 @@ export async function sendMessage(input: {
   return message;
 }
 
+/**
+ * PUT /conversations/:id/messages/:messageId/reactions
+ */
+export async function setMessageReaction(input: {
+  conversationId: string;
+  messageId: string;
+  userId: string;
+  emoji: string | null;
+}): Promise<MessageReactionRow[]> {
+  const { conversationId, messageId, userId, emoji } = input;
+
+  const member = await conversationModel.isMember(conversationId, userId);
+  if (!member) {
+    throw new HttpError('You are not a member of this conversation', 403);
+  }
+
+  const message = await conversationModel.findMessageById(messageId);
+  if (!message || message.conversation_id !== conversationId) {
+    throw new HttpError('Message not found in this conversation', 404);
+  }
+
+  if (message.id.startsWith?.('temp-')) {
+    throw new HttpError('Message not found in this conversation', 404);
+  }
+
+  return conversationModel.setMessageReaction({ messageId, userId, emoji });
+}
