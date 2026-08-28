@@ -55,6 +55,8 @@ export interface ConversationRow {
   icebreakersEnabled?: boolean;
   variant?: ConversationVariant;
   matchInfo?: ConversationMatchInfo | null;
+  /** PHT-based consecutive-day streak for this conversation (all types). */
+  dayStreak?: number;
 }
 
 export type ConversationVariant = 'regular' | 'anonymous' | 'anonymous_ended';

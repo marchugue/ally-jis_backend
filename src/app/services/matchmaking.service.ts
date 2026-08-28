@@ -7,13 +7,15 @@
 // Also owns socket emits — the controller stays thin and the model stays
 // pure data access.
 
+import type { MatchIdentityView, MatchRow, MatchmakingStatus, QueueRow } from '../types/matchmaking.types';
+import { DAILY_MATCH_LIMIT } from '../types/matchmaking.types';
 import * as matchModel from '../models/matchmaking.model';
 import { clearAllTimersForMatch, clearTimer, scheduleTimer } from '../utils/matchTimers';
 import { HttpError } from '../types/auth.types';
 import { pickTwoDistinctIdentities } from '../constants/anonymousIdentity';
 import { MIN_MESSAGES_PER_VALID_DAY, stageForStreak, stageName } from '../constants/progression';
 import { emitToUser } from './realtime.service';
-import type { MatchIdentityView, MatchRow, MatchmakingStatus, QueueRow } from '../types/matchmaking.types';
+import { phtDateStr } from '../utils/pht';
 
 const ACCEPT_TIMEOUT_MS = 30_000;
 // How long the match survives without BOTH sides having sent a message
@@ -29,19 +31,34 @@ const CHAT_FIRST_MESSAGE_TIMEOUT_MS = 5 * 60_000;
 // ---------------------------------------------------------------------------
 
 export async function joinQueue(userId: string): Promise<QueueRow> {
-  const activeMatch = await matchModel.getActiveMatchForUser(userId);
-  if (activeMatch) {
-    throw new HttpError('You already have an active match', 409);
+  const [activeMatches, todayCount] = await Promise.all([
+    matchModel.getActiveMatchesForUser(userId),
+    matchModel.countTodayMatchesForUser(userId),
+  ]);
+
+  if (todayCount >= DAILY_MATCH_LIMIT) {
+    throw new HttpError(
+      `You've reached the daily limit of ${DAILY_MATCH_LIMIT} anonymous matches. Try again tomorrow!`,
+      429,
+    );
+  }
+
+  // If the user already has a pending match, clicking "Find a Match" again
+  // is a no-op — return or create a queue entry so the frontend overlay opens
+  // and shows the pending confirmation. We no longer throw 409 here because
+  // the old redirect-to-conversation flow is gone; the overlay handles both
+  // 'searching' and 'pending' phases and must receive a successful response.
+  const hasPending = activeMatches.some((m) => m.status === 'pending');
+  if (hasPending) {
+    const existing = await matchModel.getQueueEntry(userId);
+    if (existing) return existing;
+    // Queue row already cleaned up after matching — re-insert so the caller
+    // gets a valid response; frontend picks up the pending match on next poll.
+    return matchModel.joinQueue(userId);
   }
 
   const entry = await matchModel.joinQueue(userId);
-
-  // Try to find a candidate immediately. Fire-and-forget from the caller's
-  // perspective isn't appropriate here (we want errors surfaced), so we
-  // await it, but a failure to find a match is not an error — tryMatch
-  // resolves quietly to "keep waiting" when nothing is found.
   await tryMatch(userId);
-
   return entry;
 }
 
@@ -49,14 +66,32 @@ export async function leaveQueue(userId: string): Promise<void> {
   await matchModel.leaveQueue(userId);
 }
 
-export async function getStatus(userId: string): Promise<MatchmakingStatus & { identity: MatchIdentityView | null }> {
-  const [queueEntry, activeMatch] = await Promise.all([
+export async function getStatus(
+  userId: string,
+): Promise<MatchmakingStatus & { identity: MatchIdentityView | null }> {
+  const [queueEntry, activeMatches, dailyMatchCount] = await Promise.all([
     matchModel.getQueueEntry(userId),
-    matchModel.getActiveMatchForUser(userId),
+    matchModel.getActiveMatchesForUser(userId),
+    matchModel.countTodayMatchesForUser(userId),
   ]);
 
-  const identity = activeMatch ? await matchModel.getIdentityView(activeMatch.id, userId) : null;
-  return { queueEntry, activeMatch, identity };
+  const primaryMatch =
+    activeMatches.find((m) => m.status === 'pending') ??
+    activeMatches.find((m) => m.status === 'chatting') ??
+    activeMatches.find((m) => m.status === 'confirmed') ??
+    null;
+
+  const identity = primaryMatch
+    ? await matchModel.getIdentityView(primaryMatch.id, userId)
+    : null;
+
+  return {
+    queueEntry,
+    activeMatch: primaryMatch,
+    activeMatches,
+    dailyMatchCount,
+    identity,
+  };
 }
 
 /** Thin wrapper the controller uses when it needs just the identity view
@@ -204,7 +239,7 @@ export async function recordMatchMessage(conversationId: string, senderId: strin
   // that.
   if (match.status === 'chatting' || match.status === 'confirmed') {
     const isUserA = match.user_a_id === senderId;
-    const today = new Date().toISOString().slice(0, 10); // UTC calendar day — see note in recomputeProgression
+    const today = phtDateStr(); // PHT calendar day (UTC+8)
     await matchModel.incrementDailyActivity(match.id, isUserA, today);
     await recomputeProgression(match.id);
   }
@@ -216,11 +251,10 @@ export async function recordMatchMessage(conversationId: string, senderId: strin
  * call as often as needed (e.g. also from a status poll) — it's a pure
  * read-then-maybe-write, no side effects if nothing changed.
  *
- * Streak counts consecutive calendar days (UTC) — not user-local days,
- * since there's no per-user timezone stored anywhere else in this
- * codebase either. A day only counts if BOTH sides hit
- * MIN_MESSAGES_PER_VALID_DAY. Today never *breaks* a streak just for
- * being incomplete — it simply doesn't count yet until it's valid.
+ * Streak counts consecutive PHT calendar days (UTC+8, Asia/Manila).
+ * A day only counts if BOTH sides hit MIN_MESSAGES_PER_VALID_DAY.
+ * Today never *breaks* a streak just for being incomplete — it simply
+ * doesn't count yet until it's valid.
  */
 export async function recomputeProgression(matchId: string): Promise<{ stage: number; dayStreak: number }> {
   const [rows, match] = await Promise.all([matchModel.getDailyActivity(matchId), matchModel.getMatchById(matchId)]);
@@ -232,18 +266,16 @@ export async function recomputeProgression(matchId: string): Promise<{ stage: nu
       .map((r) => r.activity_date),
   );
 
-  const toDateStr = (d: Date) => d.toISOString().slice(0, 10);
-  const cursor = new Date();
-  let dateStr = toDateStr(cursor);
-  if (!validDates.has(dateStr)) {
-    cursor.setUTCDate(cursor.getUTCDate() - 1);
-    dateStr = toDateStr(cursor);
-  }
+  const today = phtDateStr();
+
+  // Walk backwards from today PHT (or yesterday if today isn't valid yet).
+  let cursor = validDates.has(today) ? today : new Date(new Date().getTime() + 8 * 3600_000 - 86_400_000).toISOString().slice(0, 10);
   let dayStreak = 0;
-  while (validDates.has(dateStr)) {
+  while (validDates.has(cursor)) {
     dayStreak += 1;
-    cursor.setUTCDate(cursor.getUTCDate() - 1);
-    dateStr = toDateStr(cursor);
+    const prev = new Date(`${cursor}T00:00:00+08:00`);
+    prev.setDate(prev.getDate() - 1);
+    cursor = prev.toISOString().slice(0, 10);
   }
 
   const stage = stageForStreak(dayStreak);

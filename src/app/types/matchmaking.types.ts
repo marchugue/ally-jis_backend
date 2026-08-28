@@ -55,9 +55,16 @@ export interface CandidateResult {
   compatibility_score: number;
 }
 
+export const DAILY_MATCH_LIMIT = 5;
+
 export interface MatchmakingStatus {
   queueEntry: QueueRow | null;
+  /** @deprecated Use activeMatches instead. Kept for backward compat. */
   activeMatch: MatchRow | null;
+  /** All active matches for this user (pending + chatting + confirmed). */
+  activeMatches: MatchRow[];
+  /** How many matches the user has started today (UTC day). Max: DAILY_MATCH_LIMIT. */
+  dailyMatchCount: number;
 }
 
 /**

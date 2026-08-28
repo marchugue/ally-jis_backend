@@ -3,6 +3,8 @@ import * as conversationModel from '../models/conversation.model';
 import * as moderationModel from '../models/moderation.model';
 import * as matchModel from '../models/matchmaking.model';
 import * as matchmakingService from './matchmaking.service';
+import * as streakService from './conversationStreak.service';
+import * as streakModel from '../models/conversationStreak.model';
 import { emitToUser } from './realtime.service';
 import { HttpError } from '../types/auth.types';
 import type {
@@ -104,14 +106,20 @@ async function attachVariant(conversations: ConversationRow[], userId: string): 
  */
 export async function listMyConversations(userId: string): Promise<ConversationRow[]> {
   const conversationIds = await conversationModel.findConversationIdsForUser(userId);
-  const [conversations, directions] = await Promise.all([
+  const [conversations, directions, streakMap] = await Promise.all([
     conversationModel.findConversationsByIds(conversationIds),
     moderationModel.findBlockDirectionsForUser(userId),
+    streakModel.getStreaksForConversations(conversationIds),
   ]);
 
   const withBlockStatus = attachBlockStatus(conversations, userId, directions);
   const withIcebreakers = attachIcebreakersEnabled(withBlockStatus, userId);
-  return attachVariant(withIcebreakers, userId);
+  const withVariant = await attachVariant(withIcebreakers, userId);
+  // Attach general day streak (works for all conversation types).
+  return withVariant.map((conv) => ({
+    ...conv,
+    dayStreak: streakMap.get(conv.id) ?? 0,
+  }));
 }
 
 /**
@@ -132,7 +140,8 @@ export async function getConversationById(conversationId: string, userId: string
   const [tagged] = attachBlockStatus([conversation], userId, directions);
   const [withIcebreakers] = attachIcebreakersEnabled([tagged], userId);
   const [withVariant] = await attachVariant([withIcebreakers], userId);
-  return withVariant;
+  const streakMap = await streakModel.getStreaksForConversations([conversationId]);
+  return { ...withVariant, dayStreak: streakMap.get(conversationId) ?? 0 };
 }
 
 /**
@@ -349,27 +358,38 @@ export async function sendMessage(input: {
     emitToUser(recipientId, 'conversation:message_new', { conversationId, message });
   }
 
-  // A conversation tied to a live, not-yet-revealed anonymous match needs
-  // different notification handling than a regular DM: the streak/stage
-  // machine needs to know a message landed, and the notification must
-  // never carry the real sender's id — the standard path below joins
-  // from_user_id against profiles client-side, which would unmask the
-  // match partner the instant the bell renders. Once a match is revealed
-  // (see markRevealedIfMatched), it's just a regular conversation again —
-  // falls through to the normal notification path below.
+  // Streak/stage tracking runs for ALL match-linked conversations —
+  // including those that have been revealed (friends). Notifications are
+  // anonymous only while the match is not yet revealed; once revealed the
+  // normal DM notification path is used so the sender's identity is shown.
   const match = await matchModel.getMatchByConversationId(conversationId);
 
-  if (match && !match.revealed_at) {
+  if (match) {
+    // Always record the message for streak/progression — revealed or not.
     await matchmakingService.recordMatchMessage(conversationId, senderId);
 
-    await Promise.all(
-      otherMemberIds.map((recipientId) =>
-        conversationModel.createAnonymousMatchNotification({
-          userId: recipientId,
-          description: content ?? 'Sent a photo',
-        }),
-      ),
-    );
+    if (!match.revealed_at) {
+      // Still anonymous — hide sender identity in notifications.
+      await Promise.all(
+        otherMemberIds.map((recipientId) =>
+          conversationModel.createAnonymousMatchNotification({
+            userId: recipientId,
+            description: content ?? 'Sent a photo',
+          }),
+        ),
+      );
+    } else {
+      // Revealed match — safe to include the sender's real identity.
+      await Promise.all(
+        otherMemberIds.map((recipientId) =>
+          conversationModel.createMessageNotification({
+            userId: recipientId,
+            fromUserId: senderId,
+            description: content ?? 'Sent a photo',
+          }),
+        ),
+      );
+    }
   } else {
     await Promise.all(
       otherMemberIds.map((recipientId) =>
@@ -381,6 +401,14 @@ export async function sendMessage(input: {
       ),
     );
   }
+
+  // ── Streak tracking for ALL conversations (PHT calendar day) ──────────────
+  // This runs for every conversation type — regular DMs, anonymous matches,
+  // and revealed matches. The streak service writes to conversation_streaks
+  // (not match-specific tables) so it works universally.
+  void streakService
+    .recordConversationMessage(conversationId, senderId, [senderId, ...otherMemberIds])
+    .catch((err) => console.error('[streak] recordConversationMessage failed:', err));
 
   return message;
 }

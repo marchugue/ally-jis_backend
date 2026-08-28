@@ -1,8 +1,9 @@
 // src/app/constants/progression.ts
 
-/** A day only counts toward the streak if BOTH sides sent at least this
- * many messages — prevents a single "hi" from padding the streak. */
-export const MIN_MESSAGES_PER_VALID_DAY = 3;
+/** A day counts toward the streak when BOTH members have sent at least
+ * 1 message that PHT calendar day (12:00 AM → 11:59:59 PM).
+ * A single exchange is enough — the streak rewards showing up, not volume. */
+export const MIN_MESSAGES_PER_VALID_DAY = 1;
 
 export const STAGE_NAMES = [
   'Stranger',

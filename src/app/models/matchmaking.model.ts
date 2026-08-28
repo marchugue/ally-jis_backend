@@ -71,16 +71,50 @@ export async function leaveQueue(userId: string): Promise<void> {
 // Matches
 // ---------------------------------------------------------------------------
 
-export async function getActiveMatchForUser(userId: string): Promise<MatchRow | null> {
+/** Returns ALL active matches for a user (pending + chatting + confirmed).
+ * Used by getStatus() to support multiple simultaneous anonymous chats. */
+export async function getActiveMatchesForUser(userId: string): Promise<MatchRow[]> {
   const { data, error } = await supabaseAdmin
     .from('matches')
     .select('*')
     .or(`user_a_id.eq.${userId},user_b_id.eq.${userId}`)
     .in('status', ['pending', 'chatting', 'confirmed'])
     .is('revealed_at', null)
-    .maybeSingle();
+    .order('created_at', { ascending: false });
   if (error) throw error;
-  return data as MatchRow | null;
+  return (data ?? []) as MatchRow[];
+}
+
+/** Returns the first active match for a user — kept for backward compat
+ * with joinQueue's "already matched?" guard and the model's own callers.
+ * For new code, prefer getActiveMatchesForUser(). */
+export async function getActiveMatchForUser(userId: string): Promise<MatchRow | null> {
+  const matches = await getActiveMatchesForUser(userId);
+  // Return the pending one first if it exists (most urgent), else first chatting/confirmed
+  return matches.find((m) => m.status === 'pending') ?? matches[0] ?? null;
+}
+
+/** Counts how many matches were created for the user since the start of
+ * today in Philippine Standard Time (UTC+8). All statuses count —
+ * declined/timed_out included — because the limit is about how many
+ * times you can enter the queue, not outcomes. */
+export async function countTodayMatchesForUser(userId: string): Promise<number> {
+  // PHT midnight = current PHT date at 00:00 → in UTC that's 16:00 the
+  // previous calendar day (UTC+8 offset). We build the ISO string directly
+  // from the PHT date string so it is correct regardless of the server TZ.
+  const todayPHT = new Date(new Date().getTime() + 8 * 3600_000)
+    .toISOString()
+    .slice(0, 10); // YYYY-MM-DD in PHT
+  const phtMidnightUTC = new Date(`${todayPHT}T00:00:00.000+08:00`).toISOString();
+
+  const { count, error } = await supabaseAdmin
+    .from('matches')
+    .select('*', { count: 'exact', head: true })
+    .or(`user_a_id.eq.${userId},user_b_id.eq.${userId}`)
+    .gte('created_at', phtMidnightUTC);
+
+  if (error) throw error;
+  return count ?? 0;
 }
 
 export async function getMatchById(matchId: string): Promise<MatchRow | null> {
