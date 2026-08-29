@@ -12,12 +12,26 @@ import { Server as SocketIOServer } from 'socket.io';
 import * as authModel from '../app/models/auth.model';
 import { attachSocketServer } from '../app/services/realtime.service';
 import { relayTyping } from '../app/services/conversation.service';
-import { env } from '../../src/config/env';
+import { env } from '../config/env';
 
 export function initSockets(httpServer: HTTPServer): SocketIOServer {
   const io = new SocketIOServer(httpServer, {
     cors: {
-      origin: env.WEB_URL === '*' ? true : env.WEB_URL,
+      origin: (origin, callback) => {
+        // React Native / Expo often omit Origin — must allow for mobile sockets.
+        if (!origin) return callback(null, true);
+        if (
+          env.WEB_URL === '*' ||
+          origin === env.WEB_URL ||
+          origin.startsWith('http://localhost:') ||
+          origin.startsWith('http://127.0.0.1:') ||
+          origin.endsWith('.ally-jis.xyz')
+        ) {
+          callback(null, true);
+        } else {
+          callback(new Error('Not allowed by CORS'));
+        }
+      },
       credentials: true,
     },
   });
