@@ -24,6 +24,9 @@ router.patch('/me', authMiddleware, profileController.updateMe);
 // DELETE /api/profiles/me
 router.delete('/me', authMiddleware, profileController.deleteMe);
 
+// POST /api/profiles/push-token
+router.post('/push-token', authMiddleware, profileController.updatePushToken);
+
 // POST /api/profiles/batch
 router.post('/batch', authMiddleware, profileController.batch);
 

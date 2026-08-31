@@ -402,6 +402,57 @@ export async function sendMessage(input: {
     );
   }
 
+  // ── Native Expo Push Notification dispatch (MESSAGES ONLY) ───────────
+  void (async () => {
+    try {
+      const { getPushTokens } = await import('../models/pushToken.model');
+      const { sendExpoPushNotification } = await import('./pushNotification.service');
+      const profileModel = await import('../models/profile.model');
+
+      const tokenMap = await getPushTokens(otherMemberIds);
+      if (tokenMap.size > 0) {
+        const isAnon = match && !match.revealed_at;
+        let senderName = 'New Message';
+        if (!isAnon) {
+          const senderProfile = await profileModel.findById(senderId);
+          if (senderProfile) {
+            senderName = senderProfile.full_name || senderProfile.username || 'New Message';
+          }
+        } else {
+          senderName = 'Your anonymous match';
+        }
+
+        const pushBody = content
+          ? content.length > 80 ? content.slice(0, 77) + '...' : content
+          : '📷 Sent a photo';
+
+        const pushMessages = [];
+        for (const recipientId of otherMemberIds) {
+          const token = tokenMap.get(recipientId);
+          if (token) {
+            pushMessages.push({
+              to: token,
+              sound: 'default' as const,
+              title: senderName,
+              body: pushBody,
+              categoryId: 'message_actions',
+              data: {
+                conversationId,
+                type: isAnon ? 'anon_match' : 'message',
+              },
+            });
+          }
+        }
+
+        if (pushMessages.length > 0) {
+          await sendExpoPushNotification(pushMessages);
+        }
+      }
+    } catch (err) {
+      console.error('[sendMessage] Push notification dispatch failed:', err);
+    }
+  })();
+
   // ── Streak tracking for ALL conversations (PHT calendar day) ──────────────
   // This runs for every conversation type — regular DMs, anonymous matches,
   // and revealed matches. The streak service writes to conversation_streaks

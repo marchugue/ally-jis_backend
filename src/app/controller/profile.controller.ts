@@ -61,6 +61,14 @@ export const updateMe = asyncHandler(async (req: Request, res: Response) => {
   res.status(200).json(profile);
 });
 
+// POST /profiles/push-token
+export const updatePushToken = asyncHandler(async (req: Request, res: Response) => {
+  const { expoPushToken } = req.body as { expoPushToken?: string | null };
+  const { savePushToken } = await import('../models/pushToken.model');
+  await savePushToken(req.userId as string, expoPushToken ?? null);
+  res.status(200).json({ ok: true });
+});
+
 // DELETE /profiles/me
 export const deleteMe = asyncHandler(async (req: Request, res: Response) => {
   await profileService.deleteProfile(req.userId as string);
