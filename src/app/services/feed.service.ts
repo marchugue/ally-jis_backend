@@ -70,7 +70,7 @@ export async function listFeed(
   viewerId: string,
   options: { limit?: number; before?: string }
 ): Promise<PostWithAuthor[]> {
-   
+
   try {                                                    // ← add
     const limit = clampLimit(options.limit);
     const candidates = await feedModel.findFeedCandidates(limit, options.before);
@@ -234,11 +234,12 @@ export async function likePost(userId: string, postId: string): Promise<LikeStat
   await feedModel.likePost(postId, userId);
 
   if (post.author_id !== userId) {
+    const postPreview = post.content?.trim().slice(0, 80) ?? '';
     await feedModel.createNotification({
       userId: post.author_id,
       type: 'post_like',
       title: 'New like on your post',
-      description: 'Someone liked your post.',
+      description: postPreview,
       fromUserId: userId,
     });
   }
@@ -351,7 +352,7 @@ export async function createComment(
       userId: post.author_id,
       type: 'post_comment',
       title: 'New comment on your post',
-      description: 'Someone commented on your post.',
+      description: content,
       fromUserId: authorId,
     });
   }
@@ -364,7 +365,7 @@ export async function createComment(
         userId: parent.author_id,
         type: 'comment_reply',
         title: 'New reply to your comment',
-        description: 'Someone replied to your comment.',
+        description: content,
         fromUserId: authorId,
       });
     }
@@ -440,11 +441,12 @@ export async function likeComment(userId: string, commentId: string): Promise<Li
   await feedModel.likeComment(commentId, userId);
 
   if (comment.author_id !== userId) {
+    const commentPreview = comment.content?.trim().slice(0, 80) ?? '';
     await feedModel.createNotification({
       userId: comment.author_id,
       type: 'comment_like',
       title: 'New like on your comment',
-      description: 'Someone liked your comment.',
+      description: commentPreview,
       fromUserId: userId,
     });
   }

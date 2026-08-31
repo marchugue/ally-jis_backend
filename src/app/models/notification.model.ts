@@ -1,7 +1,7 @@
 import { supabaseAdmin } from '../../config/supabase';
 import type { NotificationRow } from '../types/notification.types';
 
-const NOTIFICATION_COLUMNS = 'id, user_id, type, title, description, is_read, from_user_id, created_at';
+const NOTIFICATION_COLUMNS = 'id, user_id, type, title, description, is_read, from_user_id, created_at, from_user:profiles!from_user_id(id, avatar_url, full_name, username)';
 
 /**
  * GET /notifications?limit=20
@@ -35,8 +35,6 @@ export async function findFriendRequests(userId: string): Promise<NotificationRo
 
 /**
  * PATCH /notifications/:id/read
- * Scoped to user_id as well as id so a user can't mark someone else's
- * notification as read by guessing an id.
  */
 export async function markOneRead(id: string, userId: string): Promise<void> {
   const { error } = await supabaseAdmin
