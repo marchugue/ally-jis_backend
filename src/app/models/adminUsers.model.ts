@@ -10,7 +10,7 @@ import { supabaseAdmin } from '../../config/supabase';
 import type { AdminUserDetail, AdminUserListItem, ListUsersParams } from '../types/adminUsers.types';
 
 const LIST_COLUMNS =
-  'id, username, full_name, email, avatar_url, department, course, year_level, role, is_banned, is_suspended, suspended_until, admin_verified, created_at';
+  'id, username, full_name, email, avatar_url, department, course, year_level, role, is_banned, is_suspended, suspended_until, admin_verified, created_at, email_type, chmsu_auto_verified, pending_student_verification, student_verification_status, student_id_url';
 
 async function attachLastSeen(users: any[]): Promise<AdminUserListItem[]> {
   if (users.length === 0) return [];
@@ -35,6 +35,8 @@ export async function listUsers(params: ListUsersParams): Promise<{ items: Admin
   }
   if (status === 'banned') query = query.eq('is_banned', true);
   else if (status === 'suspended') query = query.eq('is_suspended', true);
+  else if (status === 'pending') query = query.eq('admin_verified', false).eq('chmsu_auto_verified', false).or('student_verification_status.eq.pending,pending_student_verification.eq.true,email_type.eq.external');
+  else if (status === 'verified') query = query.or('admin_verified.eq.true,chmsu_auto_verified.eq.true,student_verification_status.eq.approved');
   else if (status === 'active') query = query.eq('is_banned', false).eq('is_suspended', false);
   if (department) query = query.eq('department', department);
 
@@ -51,12 +53,35 @@ export async function getUserDetail(userId: string): Promise<AdminUserDetail | n
   const { data: profile, error } = await supabaseAdmin
     .from('profiles')
     .select(
-      `${LIST_COLUMNS}, bio, interests, organizations, banned_at`,
+      `${LIST_COLUMNS}, bio, interests, organizations, banned_at, email_type, chmsu_auto_verified, pending_student_verification, student_verification_status, student_id_url`,
     )
     .eq('id', userId)
     .maybeSingle();
   if (error) throw error;
   if (!profile) return null;
+
+  let student_id_url = (profile as any).student_id_url;
+  let student_verification_status = (profile as any).student_verification_status;
+  let pending_student_verification = (profile as any).pending_student_verification;
+
+  // Fallback to Supabase Auth user_metadata if profile column is empty
+  try {
+    const { data: authUserData } = await supabaseAdmin.auth.admin.getUserById(userId);
+    if (authUserData?.user?.user_metadata) {
+      const meta = authUserData.user.user_metadata;
+      if (!student_id_url && meta.student_id_url) {
+        student_id_url = meta.student_id_url;
+      }
+      if (!student_verification_status && meta.student_verification_status) {
+        student_verification_status = meta.student_verification_status;
+      }
+      if (pending_student_verification === undefined && meta.pending_student_verification !== undefined) {
+        pending_student_verification = meta.pending_student_verification;
+      }
+    }
+  } catch (authErr) {
+    console.error('Failed to fetch auth user_metadata in getUserDetail:', authErr);
+  }
 
   const [presence, postsCount, reportsCount] = await Promise.all([
     supabaseAdmin.from('user_presence').select('last_seen_at').eq('user_id', userId).maybeSingle(),
@@ -66,6 +91,9 @@ export async function getUserDetail(userId: string): Promise<AdminUserDetail | n
 
   return {
     ...(profile as any),
+    student_id_url: student_id_url ?? null,
+    student_verification_status: student_verification_status ?? 'pending',
+    pending_student_verification: pending_student_verification ?? false,
     last_seen_at: presence.data?.last_seen_at ?? null,
     postsCount: postsCount.count ?? 0,
     reportsAgainstCount: reportsCount.count ?? 0,

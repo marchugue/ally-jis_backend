@@ -27,6 +27,12 @@ export interface ProfileRow {
   interests?: string[];
   organizations?: string[];
   created_at?: string;
+  // Verification fields (exposed in user_metadata so the frontend can gate routing)
+  email_type?: 'chmsu' | 'external' | null;
+  chmsu_auto_verified?: boolean | null;
+  pending_student_verification?: boolean | null;
+  student_verification_status?: 'pending' | 'approved' | 'rejected' | null;
+  admin_verified?: boolean | null;
 }
 
 export interface RegisterPayload {
@@ -46,6 +52,9 @@ export interface RegisterPayload {
   movie_interests?: string[];
   age_range?: string | null;
   match_gender_preference?: string | null;
+  // New email type system
+  email_type?: 'chmsu' | 'external'; // 'chmsu' = @chmsu.edu.ph, 'external' = any other
+  student_id_url?: string | null;    // R2 URL of uploaded student ID (external path only)
 }
 
 export interface LoginPayload {
@@ -54,9 +63,23 @@ export interface LoginPayload {
 }
 
 export interface EmailStatus {
-  email: string; 
+  email: string;
   isEmailVerified: boolean;
   emailConfirmedAt: string | undefined;
+}
+
+export interface OtpStatus {
+  exists: boolean;
+  verified: boolean;
+  resendCount: number;
+  resendLimit: number;
+  expiresAt: string | null;
+}
+
+export interface RegisterResponse {
+  userId: string;
+  email: string;
+  accessToken: string;
 }
 
 // Custom error type used across services/models so the error middleware

@@ -111,7 +111,8 @@ export async function updateById(id: string, payload: UpdateProfilePayload): Pro
  * `auth.users(id) on delete cascade`, so the profile row (and anything
  * else FK'd to it) is removed automatically.
  */
+import * as authModel from './auth.model';
+
 export async function deleteByAuthUserId(id: string): Promise<void> {
-  const { error } = await supabaseAdmin.auth.admin.deleteUser(id);
-  if (error) throw error;
+  await authModel.deleteAuthUser(id);
 }

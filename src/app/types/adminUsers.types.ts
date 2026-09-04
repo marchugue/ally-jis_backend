@@ -16,11 +16,17 @@ export interface AdminUserListItem {
   admin_verified: boolean;
   created_at: string;
   last_seen_at: string | null;
+  // Verification detail fields
+  email_type?: 'chmsu' | 'external' | null;
+  chmsu_auto_verified?: boolean;
+  pending_student_verification?: boolean;
+  student_verification_status?: 'pending' | 'approved' | 'rejected' | null;
+  student_id_url?: string | null;
 }
 
 export interface ListUsersParams {
   search?: string;
-  status?: 'all' | 'active' | 'banned' | 'suspended';
+  status?: 'all' | 'active' | 'banned' | 'suspended' | 'pending' | 'verified';
   department?: string;
   sortBy?: 'created_at' | 'full_name' | 'username' | 'last_seen_at';
   sortDir?: 'asc' | 'desc';
@@ -41,4 +47,10 @@ export interface AdminUserDetail extends AdminUserListItem {
   postsCount: number;
   reportsAgainstCount: number;
   banned_at: string | null;
+  // Verification detail fields shown in the admin user detail sheet
+  email_type: 'chmsu' | 'external' | null;
+  chmsu_auto_verified: boolean;
+  pending_student_verification: boolean;
+  student_verification_status: 'pending' | 'approved' | 'rejected' | null;
+  student_id_url: string | null;
 }

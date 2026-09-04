@@ -73,7 +73,7 @@ export const uploadUserAvatar = asyncHandler(async (req: Request, res: Response)
   }
 
   const url = await presetAvatarService.uploadUserAvatar({
-    userId: req.userId as string,
+    userId: req.userId as string | undefined,
     buffer: file.buffer,
     originalFilename: file.originalname,
     contentType: file.mimetype,

@@ -86,3 +86,22 @@ export const deleteUser = asyncHandler(async (req: Request, res: Response) => {
   await adminUsersService.deleteUser(req.userId as string, String(req.params.userId), req.ip);
   res.status(204).send();
 });
+
+// GET /admin/users/pending-verifications
+export const listPendingVerifications = asyncHandler(async (req: Request, res: Response) => {
+  const result = await adminUsersService.listPendingVerifications();
+  res.status(200).json(result);
+});
+
+// POST /admin/users/:userId/approve-verification
+export const approveStudentVerification = asyncHandler(async (req: Request, res: Response) => {
+  await adminUsersService.approveStudentVerification(req.userId as string, String(req.params.userId), req.ip);
+  res.status(204).send();
+});
+
+// POST /admin/users/:userId/reject-verification  { reason?: string }
+export const rejectStudentVerification = asyncHandler(async (req: Request, res: Response) => {
+  const { reason } = req.body as { reason?: string };
+  await adminUsersService.rejectStudentVerification(req.userId as string, String(req.params.userId), reason, req.ip);
+  res.status(204).send();
+});

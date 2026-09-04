@@ -93,3 +93,90 @@ export async function deleteUser(adminId: string, userId: string, ip?: string): 
   await log(adminId, 'delete_user', userId, ip); // logged before deletion — target row won't exist to reference after
   await profileModel.deleteByAuthUserId(userId);
 }
+
+// ─── Student ID / Non-CHMSU Verification ─────────────────────────────────────
+
+export interface PendingVerificationItem {
+  id: string;
+  username: string | null;
+  full_name: string | null;
+  email: string;
+  avatar_url: string | null;
+  department: string | null;
+  course: string | null;
+  student_id_url: string | null;
+  student_verification_status: string;
+  created_at: string;
+}
+
+export async function listPendingVerifications(): Promise<PendingVerificationItem[]> {
+  const { supabaseAdmin } = await import('../../config/supabase');
+  const { data, error } = await supabaseAdmin
+    .from('profiles')
+    .select('id, username, full_name, email, avatar_url, department, course, student_id_url, student_verification_status, created_at')
+    .or('student_verification_status.eq.pending,pending_student_verification.eq.true')
+    .order('created_at', { ascending: true });
+
+  if (error) {
+    console.error('Error fetching pending verifications:', error);
+    throw error;
+  }
+  return (data ?? []) as PendingVerificationItem[];
+}
+
+export async function approveStudentVerification(adminId: string, userId: string, ip?: string): Promise<void> {
+  const { supabaseAdmin } = await import('../../config/supabase');
+  const { error } = await supabaseAdmin
+    .from('profiles')
+    .update({
+      student_verification_status: 'approved',
+      pending_student_verification: false,
+      admin_verified: true,
+    })
+    .eq('id', userId);
+  if (error) throw error;
+
+  try {
+    await supabaseAdmin.auth.admin.updateUserById(userId, {
+      user_metadata: {
+        student_verification_status: 'approved',
+        admin_verified: true,
+        is_approved: true,
+        pending_student_verification: false,
+      },
+    });
+  } catch (authErr) {
+    console.warn('Could not update auth user_metadata on approval:', authErr);
+  }
+
+  await log(adminId, 'approve_student_verification', userId, ip);
+}
+
+export async function rejectStudentVerification(adminId: string, userId: string, reason?: string, ip?: string): Promise<void> {
+  const { supabaseAdmin } = await import('../../config/supabase');
+  const { error } = await supabaseAdmin
+    .from('profiles')
+    .update({
+      student_verification_status: 'rejected',
+      pending_student_verification: false,
+      admin_verified: false,
+    })
+    .eq('id', userId);
+  if (error) throw error;
+
+  try {
+    await supabaseAdmin.auth.admin.updateUserById(userId, {
+      user_metadata: {
+        student_verification_status: 'rejected',
+        admin_verified: false,
+        is_approved: false,
+        pending_student_verification: false,
+      },
+    });
+  } catch (authErr) {
+    console.warn('Could not update auth user_metadata on rejection:', authErr);
+  }
+
+  await log(adminId, 'reject_student_verification', userId, ip, { reason });
+}
+

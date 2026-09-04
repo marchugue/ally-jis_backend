@@ -46,18 +46,13 @@ export interface EmailVerification {
 /**
  * Creates a new auth user via Supabase Auth.
  *
- * Uses supabaseAdmin so this works server-side without a session.
- * email_confirm is set to FALSE so the user must verify their email
- * before they can sign in. Supabase will send a confirmation email
- * automatically when the user is created with email_confirm: false.
+ * Uses supabasePublic for signUp (this is a public, unauthenticated action).
+ * email_confirm is set to TRUE so Supabase does NOT send its own magic-link
+ * confirmation email — we handle email confirmation ourselves via OTP.
  *
  * IMPORTANT: schema.sql has an `on_auth_user_created` trigger
  * (handle_new_user) that automatically inserts the matching row into
- * public.profiles by reading these exact keys off raw_user_meta_data:
- *   username, full_name, avatar_url, bio, department, course,
- *   year_level, interests (jsonb array), organizations (jsonb array)
- * So we pass profile fields here as `user_metadata` instead of doing a
- * separate insert into profiles — the trigger does that for us.
+ * public.profiles by reading these exact keys off raw_user_meta_data.
  */
 export async function createAuthUser(
   input: CreateAuthUserInput
@@ -81,35 +76,33 @@ export async function createAuthUser(
     match_gender_preference,
   } = input;
 
-  const { data, error } = await supabasePublic.auth.signUp({
+  const { data, error } = await supabaseAdmin.auth.admin.createUser({
     email,
     password,
-    options: {
-      emailRedirectTo: env.EMAIL_REDIRECT_URL,
-      data: {
-        username: username?.toLowerCase(),
-        full_name: username?.toLowerCase(),
-        avatar_url: avatar_url ?? null,
-        bio: bio ?? null,
-        department: department ?? null,
-        course: course ?? null,
-        year_level: year_level ?? null,
-        interests: interests ?? [],
-        organizations: organizations ?? [],
-        zodiac_sign: zodiac_sign ?? null,
-        personality_type: personality_type ?? null,
-        music_taste: music_taste ?? [],
-        movie_interests: movie_interests ?? [],
-        age_range: age_range ?? null,
-        match_gender_preference: match_gender_preference ?? null,
-      },
+    email_confirm: false,
+    user_metadata: {
+      username: username?.toLowerCase(),
+      full_name: username?.toLowerCase(),
+      avatar_url: avatar_url ?? null,
+      bio: bio ?? null,
+      department: department ?? null,
+      course: course ?? null,
+      year_level: year_level ?? null,
+      interests: interests ?? [],
+      organizations: organizations ?? [],
+      zodiac_sign: zodiac_sign ?? null,
+      personality_type: personality_type ?? null,
+      music_taste: music_taste ?? [],
+      movie_interests: movie_interests ?? [],
+      age_range: age_range ?? null,
+      match_gender_preference: match_gender_preference ?? null,
     },
   });
 
   if (error) throw error;
 
   if (!data.user) {
-    throw new Error("Failed to create auth user.");
+    throw new Error('Failed to create auth user.');
   }
 
   return data.user as SupabaseAuthUser;
@@ -190,7 +183,7 @@ export async function findProfileById(id: string): Promise<ProfileRow | null> {
   const { data, error } = await supabaseAdmin
     .from('profiles')
     .select(
-      'id, email, full_name, username, avatar_url, bio, department, course, year_level, interests, organizations, created_at'
+      'id, email, full_name, username, avatar_url, bio, department, course, year_level, interests, organizations, created_at, email_type, chmsu_auto_verified, pending_student_verification, student_verification_status, admin_verified'
     )
     .eq('id', id)
     .maybeSingle();
@@ -199,11 +192,28 @@ export async function findProfileById(id: string): Promise<ProfileRow | null> {
   return data as ProfileRow | null;
 }
 
-/**
- * Deletes the auth user (cascades to profiles via FK in schema.sql),
- * used by DELETE /profiles/me.
- */
 export async function deleteAuthUser(id: string): Promise<void> {
+  // 1. Clean up child records in public schema to prevent FK cascade blockages
+  try {
+    await supabaseAdmin.from('email_otps').delete().eq('user_id', id);
+    await supabaseAdmin.from('notifications').delete().or(`user_id.eq.${id},from_user_id.eq.${id}`);
+    await supabaseAdmin.from('comment_likes').delete().eq('user_id', id);
+    await supabaseAdmin.from('post_likes').delete().eq('user_id', id);
+    await supabaseAdmin.from('post_comments').delete().eq('author_id', id);
+    await supabaseAdmin.from('posts').delete().eq('author_id', id);
+    await supabaseAdmin.from('follows').delete().or(`follower_id.eq.${id},followed_id.eq.${id}`);
+    await supabaseAdmin.from('blocks').delete().or(`blocker_id.eq.${id},blocked_id.eq.${id}`);
+    await supabaseAdmin.from('deleted_messages_user').delete().eq('user_id', id);
+    await supabaseAdmin.from('message_reactions').delete().eq('user_id', id);
+    await supabaseAdmin.from('user_interactions').delete().or(`user_id.eq.${id},target_user_id.eq.${id}`);
+    await supabaseAdmin.from('conversation_members').delete().eq('user_id', id);
+    await supabaseAdmin.from('messages').delete().eq('sender_id', id);
+    await supabaseAdmin.from('profiles').delete().eq('id', id);
+  } catch (cleanErr) {
+    console.warn('Pre-delete cleanup warning:', cleanErr);
+  }
+
+  // 2. Delete the user from Supabase Auth (auth.users)
   const { error } = await supabaseAdmin.auth.admin.deleteUser(id);
   if (error) throw error;
 }
@@ -223,13 +233,23 @@ export async function sendPasswordResetEmail(email: string, redirectTo: string):
 
 /**
  * Resends the confirmation email to a user who hasn't confirmed yet.
- * Uses the Supabase Admin API to generate a new signup confirmation link,
- * which triggers Supabase to send the confirmation email.
+ * @deprecated — OTP flow replaces this. Kept for potential admin reset use.
  */
 export async function sendConfirmationEmail(email: string): Promise<void> {
   const { error } = await supabasePublic.auth.resend({
     type: 'signup',
     email,
+  });
+  if (error) throw error;
+}
+
+/**
+ * Manually confirms a user's email in Supabase Auth after OTP verification.
+ * Called by otp.service.verifyOtp after the code is validated.
+ */
+export async function confirmEmailManually(userId: string): Promise<void> {
+  const { error } = await supabaseAdmin.auth.admin.updateUserById(userId, {
+    email_confirm: true,
   });
   if (error) throw error;
 }
@@ -283,19 +303,31 @@ export async function confirmEmailWithTokenHash(
   };
 }
 /**
- * Just the moderation-relevant columns — checked on every authenticated
- * request (see auth.middleware.ts), so this is deliberately a narrow
- * select rather than reusing findProfileById's full-profile query.
+ * Moderation AND identity-verification flags — checked on every authenticated
+ * request (see auth.middleware.ts). Narrow select intentional: fast per-request
+ * check, not a full profile load.
+ *
+ * Approval fields added so the backend can reject unapproved external-email
+ * students at the API layer, independent of any frontend routing guard.
  */
 export async function getModerationFlags(userId: string): Promise<{
   is_banned: boolean;
   is_suspended: boolean;
   suspended_until: string | null;
   session_invalidated_at: string | null;
+  // Identity-verification gate
+  email_type: string | null;
+  pending_student_verification: boolean;
+  student_verification_status: string | null;
+  admin_verified: boolean;
+  chmsu_auto_verified: boolean;
 } | null> {
   const { data, error } = await supabaseAdmin
     .from('profiles')
-    .select('is_banned, is_suspended, suspended_until, session_invalidated_at')
+    .select(
+      'is_banned, is_suspended, suspended_until, session_invalidated_at, ' +
+      'email_type, pending_student_verification, student_verification_status, admin_verified, chmsu_auto_verified'
+    )
     .eq('id', userId)
     .maybeSingle();
   if (error) throw error;

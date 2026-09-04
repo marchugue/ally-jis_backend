@@ -29,6 +29,10 @@ router.get('/activity-log', adminController.listActivityLog);
 
 // ─── User Management ───────────────────────────────────────────────────────
 router.get('/users', requirePermission('manage_users'), adminUsersController.listUsers);
+
+// Student ID verification (non-CHMSU email users) - MUST BE BEFORE /users/:userId
+router.get('/users/pending-verifications', requirePermission('manage_users'), adminUsersController.listPendingVerifications);
+
 router.get('/users/:userId', requirePermission('manage_users'), adminUsersController.getUserDetail);
 router.patch('/users/:userId', requirePermission('manage_users'), adminUsersController.updateUser);
 router.post('/users/:userId/ban', requirePermission('ban_users'), adminUsersController.banUser);
@@ -39,7 +43,10 @@ router.post('/users/:userId/verify', requirePermission('manage_users'), adminUse
 router.post('/users/:userId/unverify', requirePermission('manage_users'), adminUsersController.unverifyUser);
 router.post('/users/:userId/force-logout', requirePermission('manage_users'), adminUsersController.forceLogout);
 router.post('/users/:userId/reset-password', requirePermission('manage_users'), adminUsersController.resetUserPassword);
+router.post('/users/:userId/approve-verification', requirePermission('manage_users'), adminUsersController.approveStudentVerification);
+router.post('/users/:userId/reject-verification', requirePermission('manage_users'), adminUsersController.rejectStudentVerification);
 router.delete('/users/:userId', requirePermission('delete_users'), adminUsersController.deleteUser);
+
 
 // ─── Reports Management ─────────────────────────────────────────────────────
 router.get('/reports', requirePermission('view_reports'), adminReportsController.listReports);

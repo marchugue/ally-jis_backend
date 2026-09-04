@@ -78,7 +78,7 @@ export async function deletePresetAvatar(id: string): Promise<void> {
  * Returns the public R2 URL.
  */
 export async function uploadUserAvatar(input: {
-  userId: string;
+  userId?: string;
   buffer: Buffer;
   originalFilename: string;
   contentType: string;
@@ -95,8 +95,9 @@ export async function uploadUserAvatar(input: {
     throw new HttpError('Unsupported file type. Use JPEG, PNG, WebP or GIF.', 400);
   }
 
+  const folder = userId ? `avatars/${userId}` : 'avatars/onboarding';
   const safeFilename = originalFilename.replace(/[^a-zA-Z0-9.\-_]/g, '_');
-  const r2Path = `avatars/${userId}/${Date.now()}-${safeFilename}`;
+  const r2Path = `${folder}/${Date.now()}-${safeFilename}`;
 
   const r2Url = await uploadToR2Storage({ path: r2Path, buffer, contentType });
 

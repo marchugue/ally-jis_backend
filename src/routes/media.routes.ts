@@ -5,17 +5,17 @@
 import { Router } from 'express';
 import * as mediaController from '../app/controller/media.controller';
 import * as adminAvatarsController from '../app/controller/adminAvatars.controller';
-import { authMiddleware } from '../app/middleware/auth.middleware';
+import { authMiddleware, optionalAuthMiddleware } from '../app/middleware/auth.middleware';
 
 const router = Router();
 
 // GET /api/media/avatars/presets — public, no auth required (for onboarding & profile pickers)
 router.get('/avatars/presets', adminAvatarsController.listPresetAvatars);
 
-// POST /api/media/avatar — authenticated user uploads their own profile photo
+// POST /api/media/avatar — upload profile photo (open for onboarding & logged-in profile updates)
 router.post(
   '/avatar',
-  authMiddleware,
+  optionalAuthMiddleware,
   adminAvatarsController.upload.single('file'),
   adminAvatarsController.uploadUserAvatar,
 );
