@@ -1,4 +1,5 @@
 import { supabaseAdmin } from '../../config/supabase';
+import { emitToUser } from '../services/realtime.service';
 import type { AllyListItem, InteractionRow, InteractionStatus } from '../types/interaction.types';
 
 /**
@@ -232,13 +233,27 @@ export async function createNotification(input: {
 }): Promise<void> {
   const { userId, type, title, description, fromUserId } = input;
 
-  const { error } = await supabaseAdmin.from('notifications').insert({
-    user_id: userId,
-    type,
-    title,
-    description,
-    from_user_id: fromUserId ?? null,
-  });
+  const { data, error } = await supabaseAdmin
+    .from('notifications')
+    .insert({
+      user_id: userId,
+      type,
+      title,
+      description,
+      from_user_id: fromUserId ?? null,
+    })
+    .select()
+    .maybeSingle();
 
   if (error) throw error;
+
+  try {
+    emitToUser(
+      userId,
+      'notification:new',
+      data || { user_id: userId, type, title, description, from_user_id: fromUserId ?? null, created_at: new Date().toISOString() }
+    );
+  } catch {
+    // Non-blocking socket emission
+  }
 }

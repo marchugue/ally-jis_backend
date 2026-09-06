@@ -7,6 +7,7 @@
 // not a place where an extra round trip matters.
 
 import { supabaseAdmin } from '../../config/supabase';
+import { delCache } from '../utils/cache';
 import type { AdminUserDetail, AdminUserListItem, ListUsersParams } from '../types/adminUsers.types';
 
 const LIST_COLUMNS =
@@ -106,6 +107,7 @@ export async function setBanned(userId: string, banned: boolean): Promise<void> 
     .update({ is_banned: banned, banned_at: banned ? new Date().toISOString() : null })
     .eq('id', userId);
   if (error) throw error;
+  void delCache([`cache:user:flags:${userId}`, `cache:profile:${userId}`]);
 }
 
 export async function setSuspended(userId: string, suspended: boolean, until: string | null): Promise<void> {
@@ -114,11 +116,13 @@ export async function setSuspended(userId: string, suspended: boolean, until: st
     .update({ is_suspended: suspended, suspended_until: suspended ? until : null })
     .eq('id', userId);
   if (error) throw error;
+  void delCache([`cache:user:flags:${userId}`, `cache:profile:${userId}`]);
 }
 
 export async function setAdminVerified(userId: string, verified: boolean): Promise<void> {
   const { error } = await supabaseAdmin.from('profiles').update({ admin_verified: verified }).eq('id', userId);
   if (error) throw error;
+  void delCache([`cache:user:flags:${userId}`, `cache:profile:${userId}`]);
 }
 
 export async function invalidateSessions(userId: string): Promise<void> {
@@ -127,9 +131,11 @@ export async function invalidateSessions(userId: string): Promise<void> {
     .update({ session_invalidated_at: new Date().toISOString() })
     .eq('id', userId);
   if (error) throw error;
+  void delCache([`cache:user:flags:${userId}`, `cache:profile:${userId}`]);
 }
 
 export async function updateProfileFields(userId: string, fields: Record<string, unknown>): Promise<void> {
   const { error } = await supabaseAdmin.from('profiles').update(fields).eq('id', userId);
   if (error) throw error;
+  void delCache([`cache:user:flags:${userId}`, `cache:profile:${userId}`]);
 }

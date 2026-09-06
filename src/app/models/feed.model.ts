@@ -1,4 +1,7 @@
 import { supabaseAdmin } from '../../config/supabase';
+import { getRedisClient, isRedisConnected } from '../../config/redis';
+import { setCache } from '../utils/cache';
+import { emitToUser } from '../services/realtime.service';
 import type { CommentRow, PostAudience, PostMediaRow, PostRow } from '../types/feed.types';
 
 const PROFILE_SELECT = 'id, username, full_name, avatar_url';
@@ -106,13 +109,49 @@ export async function findProfilesByIds(
 ): Promise<Map<string, { id: string; username: string | null; full_name: string | null; avatar_url: string | null }>> {
   if (ids.length === 0) return new Map();
 
-  const { data, error } = await supabaseAdmin.from('profiles').select(PROFILE_SELECT).in('id', ids);
-  if (error) throw error;
+  type ProfileSummary = { id: string; username: string | null; full_name: string | null; avatar_url: string | null };
+  const map = new Map<string, ProfileSummary>();
+  const missingIds: string[] = [];
 
-  const map = new Map<string, { id: string; username: string | null; full_name: string | null; avatar_url: string | null }>();
-  for (const row of data ?? []) {
-    map.set(row.id, row as { id: string; username: string | null; full_name: string | null; avatar_url: string | null });
+  const client = getRedisClient();
+  if (client && isRedisConnected()) {
+    try {
+      const keys = ids.map((id) => `cache:profile:summary:${id}`);
+      const cachedValues = await client.mget(...keys);
+
+      ids.forEach((id, idx) => {
+        const val = cachedValues[idx];
+        if (val) {
+          try {
+            map.set(id, JSON.parse(val));
+          } catch {
+            missingIds.push(id);
+          }
+        } else {
+          missingIds.push(id);
+        }
+      });
+    } catch {
+      // If Redis MGET fails, fall back to querying all IDs
+      missingIds.length = 0;
+      missingIds.push(...ids);
+    }
+  } else {
+    missingIds.push(...ids);
   }
+
+  if (missingIds.length > 0) {
+    const { data, error } = await supabaseAdmin.from('profiles').select(PROFILE_SELECT).in('id', missingIds);
+    if (error) throw error;
+
+    for (const row of data ?? []) {
+      const summary = row as ProfileSummary;
+      map.set(summary.id, summary);
+      // Cache author profile summaries for 10 minutes
+      void setCache(`cache:profile:summary:${summary.id}`, summary, 600);
+    }
+  }
+
   return map;
 }
 
@@ -387,13 +426,27 @@ export async function createNotification(input: {
 }): Promise<void> {
   const { userId, type, title, description, fromUserId } = input;
 
-  const { error } = await supabaseAdmin.from('notifications').insert({
-    user_id: userId,
-    type,
-    title,
-    description,
-    from_user_id: fromUserId,
-  });
+  const { data, error } = await supabaseAdmin
+    .from('notifications')
+    .insert({
+      user_id: userId,
+      type,
+      title,
+      description,
+      from_user_id: fromUserId,
+    })
+    .select()
+    .maybeSingle();
 
   if (error) throw error;
+
+  try {
+    emitToUser(
+      userId,
+      'notification:new',
+      data || { user_id: userId, type, title, description, from_user_id: fromUserId, created_at: new Date().toISOString() }
+    );
+  } catch {
+    // Non-blocking socket emission
+  }
 }

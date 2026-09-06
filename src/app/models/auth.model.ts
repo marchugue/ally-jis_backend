@@ -1,6 +1,7 @@
-
+import crypto from 'crypto';
 import { supabasePublic, supabaseAdmin } from '../../config/supabase';
 import { env } from '../../config/env';
+import { getCache, setCache, delCache } from '../utils/cache';
 import type { ProfileRow } from '../types/auth.types';
 
 export interface CreateAuthUserInput {
@@ -135,22 +136,38 @@ export async function getUserEmailStatus(id: string): Promise<EmailVerification>
 
 /**
  * Signs out a session given its access token.
- * Server-side sign-out with Supabase has no true "kill this token now"
- * primitive unless you maintain a deny-list table — practically, the
- * access token just expires on its own. This is a no-op placeholder kept
- * here so the layering stays consistent if you add a deny-list later.
+ * Removes cached token session from Redis.
  */
-export async function signOut(_accessToken: string): Promise<void> {
-  return;
+export async function signOut(accessToken: string): Promise<void> {
+  if (accessToken) {
+    const hash = crypto.createHash('sha256').update(accessToken).digest('hex');
+    await delCache(`session:token:${hash}`);
+  }
 }
 
 /**
  * Validates an access token and returns the associated auth user.
+ * Caches validated session in Redis for 300s to avoid repeated Supabase Auth HTTP calls.
  */
 export async function getUserFromToken(accessToken: string): Promise<SupabaseAuthUser> {
+  const hash = crypto.createHash('sha256').update(accessToken).digest('hex');
+  const cacheKey = `session:token:${hash}`;
+
+  const cached = await getCache<SupabaseAuthUser>(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
   const { data, error } = await supabasePublic.auth.getUser(accessToken);
   if (error) throw error;
-  return data.user as SupabaseAuthUser;
+  if (!data?.user) {
+    throw new Error('User not found.');
+  }
+
+  const user = data.user as SupabaseAuthUser;
+  // Cache for 300 seconds (5 minutes)
+  void setCache(cacheKey, user, 300);
+  return user;
 }
 
 /**
@@ -326,6 +343,12 @@ export async function getModerationFlags(userId: string): Promise<{
   year_level: string | null;
   interests: string[] | null;
 } | null> {
+  const cacheKey = `cache:user:flags:${userId}`;
+  const cached = await getCache<any>(cacheKey);
+  if (cached !== null && cached !== undefined) {
+    return cached;
+  }
+
   const { data, error } = await supabaseAdmin
     .from('profiles')
     .select(
@@ -336,5 +359,17 @@ export async function getModerationFlags(userId: string): Promise<{
     .eq('id', userId)
     .maybeSingle();
   if (error) throw error;
+
+  if (data) {
+    void setCache(cacheKey, data, 180);
+  }
   return data as any;
+}
+
+/**
+ * Invalidates cached moderation and onboarding flags for a user.
+ * Call this when ban, suspension, verification status, or onboarding fields change.
+ */
+export async function invalidateUserModerationFlags(userId: string): Promise<void> {
+  await delCache(`cache:user:flags:${userId}`);
 }

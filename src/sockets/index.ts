@@ -9,10 +9,12 @@
 
 import type { Server as HTTPServer } from 'http';
 import { Server as SocketIOServer } from 'socket.io';
+import { createAdapter } from '@socket.io/redis-adapter';
 import * as authModel from '../app/models/auth.model';
 import { attachSocketServer } from '../app/services/realtime.service';
 import { relayTyping } from '../app/services/conversation.service';
 import { env } from '../config/env';
+import { getRedisClient, getRedisSubClient } from '../config/redis';
 
 export function initSockets(httpServer: HTTPServer): SocketIOServer {
   const io = new SocketIOServer(httpServer, {
@@ -35,6 +37,15 @@ export function initSockets(httpServer: HTTPServer): SocketIOServer {
       credentials: true,
     },
   });
+
+  const pubClient = getRedisClient();
+  const subClient = getRedisSubClient();
+  if (pubClient && subClient) {
+    io.adapter(createAdapter(pubClient, subClient));
+    console.info('[Sockets] Redis adapter attached for horizontal scaling.');
+  } else {
+    console.info('[Sockets] Running with local in-memory socket adapter.');
+  }
 
   io.use(async (socket, next) => {
     try {

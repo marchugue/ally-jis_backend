@@ -37,5 +37,10 @@ export const env = {
   // ─── OTP Configuration ────────────────────────────────────────────────────
   OTP_EXPIRY_MINUTES: Number(process.env.OTP_EXPIRY_MINUTES ?? 10),
   OTP_MAX_RESENDS: Number(process.env.OTP_MAX_RESENDS ?? 3),
+
+  // ─── Redis Caching & PubSub ───────────────────────────────────────────────
+  // e.g. redis://127.0.0.1:6379 or rediss://...
+  REDIS_URL: process.env.REDIS_URL ?? '',
+  REDIS_ENABLED: process.env.REDIS_ENABLED !== 'false' && Boolean(process.env.REDIS_URL),
 };
 

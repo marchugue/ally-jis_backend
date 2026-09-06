@@ -1,4 +1,5 @@
 import { supabaseAdmin } from '../../config/supabase';
+import { getOrSetCache, delCache } from '../utils/cache';
 import type { ProfileRow, UpdateProfilePayload } from '../types/profile.types';
 
 const PROFILE_COLUMNS =
@@ -8,14 +9,20 @@ const PROFILE_COLUMNS =
  * GET /profiles/me, GET /profiles/:userId
  */
 export async function findById(id: string): Promise<ProfileRow | null> {
-  const { data, error } = await supabaseAdmin
-    .from('profiles')
-    .select(PROFILE_COLUMNS)
-    .eq('id', id)
-    .maybeSingle();
+  return getOrSetCache(
+    `cache:profile:${id}`,
+    async () => {
+      const { data, error } = await supabaseAdmin
+        .from('profiles')
+        .select(PROFILE_COLUMNS)
+        .eq('id', id)
+        .maybeSingle();
 
-  if (error) throw error;
-  return data as ProfileRow | null;
+      if (error) throw error;
+      return data as ProfileRow | null;
+    },
+    300 // 5 minutes TTL
+  );
 }
 
 /**
@@ -102,6 +109,10 @@ export async function updateById(id: string, payload: UpdateProfilePayload): Pro
     .single();
 
   if (error) throw error;
+
+  // Invalidate Redis profile cache and user flags
+  void delCache([`cache:profile:${id}`, `cache:user:flags:${id}`]);
+
   return data as ProfileRow;
 }
 
