@@ -55,10 +55,16 @@ function buildAuthSession(args: {
               profile.admin_verified ||
               profile.student_verification_status === 'approved'
             ),
-            // Onboarding guard — true only after the user completes step 4 (profile saved with a course)
-            onboarding_complete: !!(profile.course && profile.username),
+            // Onboarding guard — true only after the user completes step 4 (profile saved with course, department, year_level, interests)
+            onboarding_complete: Boolean(
+              user.user_metadata?.onboarding_complete === true ||
+              (profile.course && profile.department && profile.year_level && profile.username && Array.isArray(profile.interests) && profile.interests.length >= 3)
+            ),
           }
-        : user.user_metadata,
+        : {
+            ...user.user_metadata,
+            onboarding_complete: user.user_metadata?.onboarding_complete === true,
+          },
       app_metadata: user.app_metadata,
       aud: user.aud,
       created_at: user.created_at,

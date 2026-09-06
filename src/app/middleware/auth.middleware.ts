@@ -51,6 +51,30 @@ export const authMiddleware = asyncHandler(async (req: Request, res: Response, n
       }
     }
 
+    // ── Onboarding gate — all students must complete onboarding before feature access ──
+    const isOnboardingComplete = Boolean(
+      user.user_metadata?.onboarding_complete === true ||
+      (flags?.course && flags?.department && flags?.year_level && Array.isArray(flags?.interests) && flags.interests.length >= 3)
+    );
+
+    const path = req.path; // relative to the router mount point
+    const fullPath = req.originalUrl.split('?')[0]; // absolute, no query string
+    const isExempt =
+      APPROVAL_EXEMPT_PATHS.has(fullPath) ||
+      fullPath.startsWith('/api/media/') ||
+      fullPath.startsWith('/api/lookups') ||
+      fullPath.startsWith('/api/profiles/me') ||
+      path === '/session' ||
+      path === '/logout';
+
+    if (!isOnboardingComplete && !isExempt) {
+      res.status(403).json({
+        code: 'ONBOARDING_INCOMPLETE',
+        message: 'Please complete your onboarding profile before accessing this feature.',
+      });
+      return;
+    }
+
     // ── Approval gate — external-email students only ───────────────────
     // A student using a personal/external email must have their identity
     // verified by an admin before they can access any protected resource.
@@ -66,15 +90,6 @@ export const authMiddleware = asyncHandler(async (req: Request, res: Response, n
       flags?.student_verification_status === 'approved';
 
     if (isExternalEmail && !isApproved) {
-      // Whitelist a small set of auth endpoints so the student can still
-      // poll for approval status and sign out cleanly.
-      const path = req.path; // relative to the router mount point
-      const fullPath = req.originalUrl.split('?')[0]; // absolute, no query string
-      const isExempt =
-        APPROVAL_EXEMPT_PATHS.has(fullPath) ||
-        path === '/session' ||
-        path === '/logout';
-
       if (!isExempt) {
         res.status(403).json({
           code: 'PENDING_APPROVAL',

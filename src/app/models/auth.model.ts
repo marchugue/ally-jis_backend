@@ -321,12 +321,17 @@ export async function getModerationFlags(userId: string): Promise<{
   student_verification_status: string | null;
   admin_verified: boolean;
   chmsu_auto_verified: boolean;
+  course: string | null;
+  department: string | null;
+  year_level: string | null;
+  interests: string[] | null;
 } | null> {
   const { data, error } = await supabaseAdmin
     .from('profiles')
     .select(
       'is_banned, is_suspended, suspended_until, session_invalidated_at, ' +
-      'email_type, pending_student_verification, student_verification_status, admin_verified, chmsu_auto_verified'
+      'email_type, pending_student_verification, student_verification_status, admin_verified, chmsu_auto_verified, ' +
+      'course, department, year_level, interests'
     )
     .eq('id', userId)
     .maybeSingle();

@@ -49,7 +49,31 @@ export async function updateProfile(id: string, payload: UpdateProfilePayload): 
     }
   }
 
-  return profileModel.updateById(id, payload);
+  const updated = await profileModel.updateById(id, payload);
+
+  // If the profile now meets all onboarding criteria, sync onboarding_complete: true to auth metadata
+  if (updated.course && updated.department && updated.year_level && Array.isArray(updated.interests) && updated.interests.length >= 3) {
+    try {
+      const { supabaseAdmin } = await import('../../config/supabase');
+      const { data: userRes } = await supabaseAdmin.auth.admin.getUserById(id);
+      if (userRes?.user) {
+        await supabaseAdmin.auth.admin.updateUserById(id, {
+          user_metadata: {
+            ...userRes.user.user_metadata,
+            onboarding_complete: true,
+            course: updated.course,
+            department: updated.department,
+            year_level: updated.year_level,
+            avatar_url: updated.avatar_url,
+          },
+        });
+      }
+    } catch (authErr) {
+      console.error('Failed to sync auth user_metadata for onboarding completion:', authErr);
+    }
+  }
+
+  return updated;
 }
 
 /**
