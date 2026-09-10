@@ -13,5 +13,8 @@ export async function heartbeat(userId: string): Promise<void> {
  */
 export async function listOnline(): Promise<OnlineUsersResponse> {
   const userIds = await presenceModel.findOnlineUserIds();
-  return { userIds };
+  return {
+    userIds,
+    online: userIds.map((id) => ({ user_id: id, last_seen: new Date().toISOString() })),
+  };
 }
