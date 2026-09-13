@@ -10,6 +10,7 @@
 // "friend-requests" / "read-all" as a notification id.
 
 import { Router } from 'express';
+import type { Request, Response, NextFunction } from 'express';
 import * as notificationController from '../app/controller/notification.controller';
 import { authMiddleware } from '../app/middleware/auth.middleware';
 
@@ -17,13 +18,34 @@ import { checkAndSendStreakReminders } from '../app/services/streakReminder.serv
 
 const router = Router();
 
-router.use(authMiddleware);
+// ── Internal control-panel bypass ───────────────────────────────────────────
+// Requests from the local Electron control panel carry X-Control-Panel-Key.
+// We validate the shared secret and short-circuit before the auth middleware.
+const INTERNAL_KEY = process.env.CONTROL_PANEL_KEY || 'ally-jis-internal-2025';
 
-// POST /api/notifications/test-streak-reminders (trigger manual check)
-router.post('/test-streak-reminders', async (_req, res) => {
+function internalKeyMiddleware(req: Request, res: Response, next: NextFunction): void {
+  const key = req.headers['x-control-panel-key'];
+  if (key === INTERNAL_KEY) {
+    next(); // Bypass user-auth for internal calls
+    return;
+  }
+  next('router'); // Fall through to auth-guarded routes below
+}
+
+// POST /api/notifications/test-streak-reminders
+// Accessible by control panel (internal key) OR authenticated users
+router.post('/test-streak-reminders', internalKeyMiddleware, async (_req, res) => {
   const result = await checkAndSendStreakReminders();
   res.status(200).json(result);
 });
+
+// POST /api/notifications/test-streak-reminders — auth-guarded fallback
+router.post('/test-streak-reminders', authMiddleware, async (_req, res) => {
+  const result = await checkAndSendStreakReminders();
+  res.status(200).json(result);
+});
+
+router.use(authMiddleware);
 
 // GET /api/notifications/friend-requests
 router.get('/friend-requests', notificationController.friendRequests);
