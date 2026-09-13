@@ -22,6 +22,7 @@ export interface AdminUserListItem {
   pending_student_verification?: boolean;
   student_verification_status?: 'pending' | 'approved' | 'rejected' | null;
   student_id_url?: string | null;
+  student_id_back_url?: string | null;
 }
 
 export interface ListUsersParams {
@@ -53,4 +54,5 @@ export interface AdminUserDetail extends AdminUserListItem {
   pending_student_verification: boolean;
   student_verification_status: 'pending' | 'approved' | 'rejected' | null;
   student_id_url: string | null;
+  student_id_back_url?: string | null;
 }

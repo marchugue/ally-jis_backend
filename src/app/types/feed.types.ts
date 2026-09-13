@@ -29,6 +29,10 @@ export interface AuthorSummary {
   username: string | null;
   full_name: string | null;
   avatar_url: string | null;
+  department?: string | null;
+  course?: string | null;
+  interests?: string[] | null;
+  is_following?: boolean;
 }
 
 // A row from post_media — one image, in display order.
@@ -73,4 +77,17 @@ export interface UpdatePostPayload {
 export interface CreateCommentPayload {
   content: string;
   parentCommentId?: string | null;
+}
+
+export type FeedFilterType = 'all' | 'allies' | 'following' | 'discover' | 'popular';
+
+export interface FeedFilterOptions {
+  limit?: number;
+  before?: string;
+  filter?: FeedFilterType;
+  department?: string;
+  course?: string;
+  interest?: string;
+  search?: string;
+  mediaOnly?: boolean;
 }

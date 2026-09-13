@@ -123,21 +123,24 @@ export async function removeAllyRows(userIdA: string, userIdB: string): Promise<
   if (error) throw error;
 }
 
-const ALLY_PROFILE_COLUMNS = 'id, username, full_name, avatar_url, course';
+const ALLY_PROFILE_COLUMNS = 'id, username, full_name, avatar_url, course, department, year_level';
 
-/** Simple offset pagination, same rationale as follow.model.ts's lists —
- * not expected to reach a scale where keyset pagination earns its
- * complexity. */
-export async function listAllies(userId: string, limit: number, offset: number): Promise<AllyListItem[]> {
+export async function listAllies(
+  userId: string,
+  limit: number,
+  offset: number,
+  filters?: { search?: string; department?: string; course?: string; year_level?: string; sortBy?: 'recent' | 'name' }
+): Promise<AllyListItem[]> {
   const { data, error } = await supabaseAdmin
     .from('user_interactions')
     .select(`accepted_at, target:profiles!user_interactions_target_user_id_fkey(${ALLY_PROFILE_COLUMNS})`)
     .eq('user_id', userId)
     .eq('status', 'accepted')
-    .order('accepted_at', { ascending: false })
-    .range(offset, offset + limit - 1);
+    .order('accepted_at', { ascending: false });
+
   if (error) throw error;
-  return (data ?? [])
+
+  let items = (data ?? [])
     .filter((row: any) => row.target)
     .map((row: any) => ({
       id: row.target.id,
@@ -145,8 +148,39 @@ export async function listAllies(userId: string, limit: number, offset: number):
       fullName: row.target.full_name ?? null,
       avatarUrl: row.target.avatar_url ?? null,
       course: row.target.course ?? null,
+      department: row.target.department ?? null,
+      yearLevel: row.target.year_level ?? null,
       alliedAt: row.accepted_at,
     }));
+
+  if (filters?.search) {
+    const s = filters.search.toLowerCase().trim();
+    items = items.filter((item) =>
+      (item.fullName?.toLowerCase() || '').includes(s) ||
+      (item.username?.toLowerCase() || '').includes(s)
+    );
+  }
+
+  if (filters?.department) {
+    const d = filters.department.toLowerCase().trim();
+    items = items.filter((item: any) => (item.department?.toLowerCase() || '') === d);
+  }
+
+  if (filters?.course) {
+    const c = filters.course.toLowerCase().trim();
+    items = items.filter((item) => (item.course?.toLowerCase() || '') === c);
+  }
+
+  if (filters?.year_level) {
+    const y = filters.year_level.toLowerCase().trim();
+    items = items.filter((item: any) => (item.yearLevel?.toLowerCase() || '') === y);
+  }
+
+  if (filters?.sortBy === 'name') {
+    items.sort((a, b) => (a.fullName || a.username || '').localeCompare(b.fullName || b.username || ''));
+  }
+
+  return items.slice(offset, offset + limit);
 }
 
 export async function getAlliesCount(userId: string): Promise<number> {
@@ -230,28 +264,61 @@ export async function createNotification(input: {
   title: string;
   description: string;
   fromUserId?: string | null;
+  targetId?: string | null;
+  postId?: string | null;
+  commentId?: string | null;
 }): Promise<void> {
-  const { userId, type, title, description, fromUserId } = input;
+  const { userId, type, title, description, fromUserId, targetId, postId, commentId } = input;
 
+  const insertPayload: Record<string, any> = {
+    user_id: userId,
+    type,
+    title,
+    description,
+    from_user_id: fromUserId ?? null,
+  };
+  if (targetId) insertPayload.target_id = targetId;
+  if (postId) insertPayload.post_id = postId;
+  if (commentId) insertPayload.comment_id = commentId;
+
+  let insertedData: any = null;
   const { data, error } = await supabaseAdmin
     .from('notifications')
-    .insert({
-      user_id: userId,
-      type,
-      title,
-      description,
-      from_user_id: fromUserId ?? null,
-    })
+    .insert(insertPayload)
     .select()
     .maybeSingle();
 
-  if (error) throw error;
+  if (error) {
+    const { data: fallbackData, error: fallbackError } = await supabaseAdmin
+      .from('notifications')
+      .insert({
+        user_id: userId,
+        type,
+        title,
+        description,
+        from_user_id: fromUserId ?? null,
+      })
+      .select()
+      .maybeSingle();
+    if (fallbackError) throw fallbackError;
+    insertedData = fallbackData;
+  } else {
+    insertedData = data;
+  }
 
   try {
     emitToUser(
       userId,
       'notification:new',
-      data || { user_id: userId, type, title, description, from_user_id: fromUserId ?? null, created_at: new Date().toISOString() }
+      insertedData || {
+        user_id: userId,
+        type,
+        title,
+        description,
+        from_user_id: fromUserId ?? null,
+        target_id: targetId ?? null,
+        created_at: new Date().toISOString(),
+      }
     );
   } catch {
     // Non-blocking socket emission

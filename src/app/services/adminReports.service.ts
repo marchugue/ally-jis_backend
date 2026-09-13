@@ -3,6 +3,7 @@
 import * as adminReportsModel from '../models/adminReports.model';
 import * as adminModel from '../models/admin.model';
 import * as adminUsersService from './adminUsers.service';
+import * as feedModel from '../models/feed.model';
 import { createNotification } from '../models/interaction.model';
 import { HttpError } from '../types/auth.types';
 import type { ListReportsParams, PaginatedReportList, ReportStatus } from '../types/adminReports.types';
@@ -72,3 +73,21 @@ export async function suspendReportedUser(adminId: string, reportId: string, unt
   if (!report?.reported_user_id) throw new HttpError('Report has no reported user', 400);
   await adminUsersService.suspendUser(adminId, report.reported_user_id, until, ip);
 }
+
+export async function deleteReportedPost(adminId: string, reportId: string, explicitPostId?: string, ip?: string): Promise<void> {
+  const report = await adminReportsModel.getReportById(reportId);
+  if (!report) throw new HttpError('Report not found', 404);
+
+  const postId = explicitPostId || report.post_id;
+  if (!postId) throw new HttpError('Report is not linked to any post', 400);
+
+  await feedModel.deletePost(postId);
+
+  const currentNotes = report.internal_notes || '';
+  const deletionNote = `[Post deleted by Admin at ${new Date().toISOString()}]`;
+  const updatedNotes = currentNotes ? `${currentNotes}\n${deletionNote}` : deletionNote;
+  await adminReportsModel.setInternalNotes(reportId, updatedNotes);
+
+  await log(adminId, 'delete_reported_post', report.reported_user_id, ip, { reportId, postId });
+}
+

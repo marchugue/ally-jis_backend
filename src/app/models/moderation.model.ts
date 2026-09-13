@@ -59,15 +59,25 @@ export async function createReport({
   reportedUserId,
   violationId,
   conversationId,
+  postId,
+  notes,
 }: CreateReportParams): Promise<ReportRow> {
+  const insertPayload: Record<string, any> = {
+    reporter_id: reporterId,
+    reported_user_id: reportedUserId,
+    violation_id: violationId,
+    conversation_id: conversationId ?? null,
+  };
+
+  if (postId) {
+    insertPayload.internal_notes = `[POST:${postId}]${notes ? ' ' + notes.trim() : ''}`;
+  } else if (notes) {
+    insertPayload.internal_notes = notes.trim();
+  }
+
   const { data, error } = await supabaseAdmin
     .from('reports')
-    .insert({
-      reporter_id: reporterId,
-      reported_user_id: reportedUserId,
-      violation_id: violationId,
-      conversation_id: conversationId ?? null,
-    })
+    .insert(insertPayload)
     .select('id, created_at')
     .single();
 

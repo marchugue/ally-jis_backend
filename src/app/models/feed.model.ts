@@ -4,7 +4,7 @@ import { setCache } from '../utils/cache';
 import { emitToUser } from '../services/realtime.service';
 import type { CommentRow, PostAudience, PostMediaRow, PostRow } from '../types/feed.types';
 
-const PROFILE_SELECT = 'id, username, full_name, avatar_url';
+const PROFILE_SELECT = 'id, username, full_name, avatar_url, department, course, interests';
 const POST_COLUMNS = 'id, author_id, content, audience, likes_count, comments_count, created_at, updated_at';
 const COMMENT_COLUMNS =
   'id, post_id, author_id, parent_comment_id, content, likes_count, created_at, updated_at';
@@ -153,6 +153,23 @@ export async function findProfilesByIds(
   }
 
   return map;
+}
+
+export async function findProfilesByUsernames(
+  usernames: string[]
+): Promise<{ id: string; username: string }[]> {
+  if (usernames.length === 0) return [];
+  const cleaned = [...new Set(usernames.map((u) => u.toLowerCase().trim()))];
+  const { data, error } = await supabaseAdmin
+    .from('profiles')
+    .select('id, username')
+    .in('username', cleaned);
+
+  if (error) {
+    console.error('[feedModel.findProfilesByUsernames] error:', error);
+    return [];
+  }
+  return (data as { id: string; username: string }[]) ?? [];
 }
 
 export async function findLikedPostIds(userId: string, postIds: string[]): Promise<Set<string>> {
@@ -423,20 +440,48 @@ export async function createNotification(input: {
   title: string;
   description: string;
   fromUserId: string;
+  postId?: string | null;
+  commentId?: string | null;
 }): Promise<void> {
-  const { userId, type, title, description, fromUserId } = input;
+  const { userId, type, title, description, fromUserId, postId, commentId } = input;
 
-  const { data, error } = await supabaseAdmin
+  const row: Record<string, unknown> = {
+    user_id: userId,
+    type,
+    title,
+    description,
+    from_user_id: fromUserId,
+  };
+  if (postId) {
+    row['post_id'] = postId;
+    row['target_id'] = postId;
+  }
+  if (commentId) row['comment_id'] = commentId;
+
+  let { data, error } = await supabaseAdmin
     .from('notifications')
-    .insert({
-      user_id: userId,
-      type,
-      title,
-      description,
-      from_user_id: fromUserId,
-    })
+    .insert(row)
     .select()
     .maybeSingle();
+
+  if (error) {
+    const isMissingCol =
+      error.code === 'PGRST204' ||
+      error.code === '42703' ||
+      Boolean(error.message?.includes('post_id') || error.message?.includes('comment_id'));
+
+    if (isMissingCol && (row['post_id'] || row['comment_id'])) {
+      delete row['post_id'];
+      delete row['comment_id'];
+      const retry = await supabaseAdmin
+        .from('notifications')
+        .insert(row)
+        .select()
+        .maybeSingle();
+      data = retry.data;
+      error = retry.error;
+    }
+  }
 
   if (error) throw error;
 
@@ -444,7 +489,13 @@ export async function createNotification(input: {
     emitToUser(
       userId,
       'notification:new',
-      data || { user_id: userId, type, title, description, from_user_id: fromUserId, created_at: new Date().toISOString() }
+      data || {
+        user_id: userId, type, title, description,
+        from_user_id: fromUserId,
+        post_id: postId ?? null,
+        comment_id: commentId ?? null,
+        created_at: new Date().toISOString(),
+      }
     );
   } catch {
     // Non-blocking socket emission

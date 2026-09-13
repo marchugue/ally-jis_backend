@@ -45,6 +45,59 @@ export async function findAllExcluding(excludeId?: string | null): Promise<Profi
   return (data ?? []) as ProfileRow[];
 }
 
+export async function findFilteredProfiles(
+  filters: {
+    excludeId?: string | null;
+    search?: string;
+    department?: string;
+    course?: string;
+    year_level?: string;
+    interest?: string;
+    limit?: number;
+    offset?: number;
+  }
+): Promise<ProfileRow[]> {
+  let query = supabaseAdmin
+    .from('profiles')
+    .select(PROFILE_COLUMNS)
+    .order('created_at', { ascending: false });
+
+  if (filters.excludeId) {
+    query = query.neq('id', filters.excludeId);
+  }
+
+  if (filters.department) {
+    query = query.ilike('department', `%${filters.department.trim()}%`);
+  }
+
+  if (filters.course) {
+    query = query.ilike('course', `%${filters.course.trim()}%`);
+  }
+
+  if (filters.year_level) {
+    query = query.ilike('year_level', `%${filters.year_level.trim()}%`);
+  }
+
+  if (filters.interest) {
+    query = query.contains('interests', [filters.interest.trim()]);
+  }
+
+  if (filters.search) {
+    const s = filters.search.trim();
+    query = query.or(`full_name.ilike.%${s}%,username.ilike.%${s}%,bio.ilike.%${s}%`);
+  }
+
+  if (typeof filters.offset === 'number' && typeof filters.limit === 'number') {
+    query = query.range(filters.offset, filters.offset + filters.limit - 1);
+  } else if (typeof filters.limit === 'number') {
+    query = query.limit(filters.limit);
+  }
+
+  const { data, error } = await query;
+  if (error) throw error;
+  return (data ?? []) as ProfileRow[];
+}
+
 /**
  * POST /profiles/batch
  */

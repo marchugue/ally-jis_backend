@@ -73,13 +73,17 @@ async function attachVariant(conversations: ConversationRow[], userId: string): 
 
     const ended = TERMINAL_MATCH_STATUSES.has(match.status);
     const matchInfo = {
+      id: match.matchId,
       matchId: match.matchId,
+      status: match.status,
       stage: match.currentStage,
       dayStreak: match.dayStreak,
       myAlias: match.myAlias,
       myAvatar: match.myAvatar,
       partnerAlias: match.partnerAlias,
       partnerAvatar: match.partnerAvatar,
+      chatExpiresAt: match.chatExpiresAt,
+      confirmedAt: match.confirmedAt,
       ended,
     };
 
@@ -369,35 +373,50 @@ export async function sendMessage(input: {
     await matchmakingService.recordMatchMessage(conversationId, senderId);
 
     if (!match.revealed_at) {
-      // Still anonymous — hide sender identity in notifications.
+      // Still anonymous — hide real identity and use anonymous alias in notifications.
+      const senderIsUserA = match.user_a_id === senderId;
+      const senderAlias = senderIsUserA
+        ? (match.user_a_alias || 'Anonymous Ally')
+        : (match.user_b_alias || 'Anonymous Ally');
+
       await Promise.all(
         otherMemberIds.map((recipientId) =>
-          conversationModel.createAnonymousMatchNotification({
-            userId: recipientId,
-            description: content ?? 'Sent a photo',
-          }),
+          conversationModel
+            .createAnonymousMatchNotification({
+              userId: recipientId,
+              description: content ?? 'Sent a photo',
+              senderAlias,
+              conversationId,
+            })
+            .catch((err) => console.error('Error creating anon match notification:', err)),
         ),
       );
     } else {
       // Revealed match — safe to include the sender's real identity.
       await Promise.all(
         otherMemberIds.map((recipientId) =>
-          conversationModel.createMessageNotification({
-            userId: recipientId,
-            fromUserId: senderId,
-            description: content ?? 'Sent a photo',
-          }),
+          conversationModel
+            .createMessageNotification({
+              userId: recipientId,
+              fromUserId: senderId,
+              description: content ?? 'Sent a photo',
+              conversationId,
+            })
+            .catch((err) => console.error('Error creating message notification:', err)),
         ),
       );
     }
   } else {
     await Promise.all(
       otherMemberIds.map((recipientId) =>
-        conversationModel.createMessageNotification({
-          userId: recipientId,
-          fromUserId: senderId,
-          description: content ?? 'Sent a photo',
-        }),
+        conversationModel
+          .createMessageNotification({
+            userId: recipientId,
+            fromUserId: senderId,
+            description: content ?? 'Sent a photo',
+            conversationId,
+          })
+          .catch((err) => console.error('Error creating message notification:', err)),
       ),
     );
   }
@@ -419,7 +438,10 @@ export async function sendMessage(input: {
             senderName = senderProfile.full_name || senderProfile.username || 'New Message';
           }
         } else {
-          senderName = 'Your anonymous match';
+          const senderIsUserA = match?.user_a_id === senderId;
+          senderName = senderIsUserA
+            ? (match?.user_a_alias || 'Anonymous Ally')
+            : (match?.user_b_alias || 'Anonymous Ally');
         }
 
         const pushBody = content
@@ -435,6 +457,7 @@ export async function sendMessage(input: {
               sound: 'default' as const,
               title: senderName,
               body: pushBody,
+              channelId: 'default',
               categoryId: 'message_actions',
               data: {
                 conversationId,

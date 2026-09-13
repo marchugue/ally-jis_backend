@@ -16,5 +16,5 @@
   },
   "include": ["src/**/*", "src/types/express.d.ts"],
   "exclude": ["node_modules", "dist"],
-  "ts-node": { "files": true }
+  "ts-node": { "transpileOnly": true, "files": true }
 }

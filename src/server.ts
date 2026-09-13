@@ -4,6 +4,7 @@ import { env } from './config/env';
 import { initRedis, closeRedis } from './config/redis';
 import { initSockets } from './sockets';
 import { reconcileStaleMatches } from './app/services/matchmaking.service';
+import { initStreakReminderScheduler } from './app/services/streakReminder.service';
 
 process.on('uncaughtException', (err) => {
   console.error('uncaughtException:', err);
@@ -30,6 +31,9 @@ async function bootstrap() {
     // Safety net: in-memory matchmaking timers don't survive a restart, so
     // sweep for anything past its deadline on boot.
     reconcileStaleMatches().catch((err) => console.error('reconcileStaleMatches failed:', err));
+
+    // Initialize 10:00 PM PHT streak reminder scheduler
+    initStreakReminderScheduler();
   });
 
   server.on('error', (err) => {

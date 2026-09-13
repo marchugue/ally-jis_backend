@@ -56,3 +56,25 @@ export interface UsernameAvailability {
 export interface BatchProfilesPayload {
   ids: string[];
 }
+
+export type ProfileSortBy = 'match' | 'popular' | 'recent' | 'name';
+
+export interface ProfileFilterOptions {
+  search?: string;
+  department?: string;
+  course?: string;
+  year_level?: string;
+  interest?: string;
+  sortBy?: ProfileSortBy;
+  excludeId?: string | null;
+  viewerId?: string | null;
+  limit?: number;
+  offset?: number;
+}
+
+export interface DiscoverProfileItem extends ProfileRow {
+  sharedInterestsCount?: number;
+  matchPercentage?: number;
+  followersCount?: number;
+  alliesCount?: number;
+}

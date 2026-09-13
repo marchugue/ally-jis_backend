@@ -31,10 +31,76 @@ export const getRelationship = asyncHandler(async (req: Request, res: Response) 
   res.status(200).json(summary);
 });
 
-// GET /profiles?exclude={userId}
+// GET /profiles?exclude={userId}&department=...&search=...&sortBy=match
 export const list = asyncHandler(async (req: Request, res: Response) => {
   const exclude = typeof req.query.exclude === 'string' ? req.query.exclude : null;
-  const profiles = await profileService.listProfiles(exclude);
+  const search =
+    typeof req.query.search === 'string'
+      ? req.query.search
+      : typeof req.query.q === 'string'
+      ? req.query.q
+      : undefined;
+  const department = typeof req.query.department === 'string' ? req.query.department : undefined;
+  const course = typeof req.query.course === 'string' ? req.query.course : undefined;
+  const year_level =
+    typeof req.query.year_level === 'string'
+      ? req.query.year_level
+      : typeof req.query.yearLevel === 'string'
+      ? req.query.yearLevel
+      : undefined;
+  const interest = typeof req.query.interest === 'string' ? req.query.interest : undefined;
+  const sortBy = typeof req.query.sortBy === 'string' ? (req.query.sortBy as any) : undefined;
+  const limit = req.query.limit ? Number(req.query.limit) : undefined;
+  const offset = req.query.offset ? Number(req.query.offset) : undefined;
+
+  const profiles = await profileService.listProfiles({
+    excludeId: exclude,
+    viewerId: req.userId as string,
+    search,
+    department,
+    course,
+    year_level,
+    interest,
+    sortBy,
+    limit,
+    offset,
+  });
+  res.status(200).json(profiles);
+});
+
+// GET /profiles/discover
+export const discover = asyncHandler(async (req: Request, res: Response) => {
+  const search =
+    typeof req.query.search === 'string'
+      ? req.query.search
+      : typeof req.query.q === 'string'
+      ? req.query.q
+      : undefined;
+  const department = typeof req.query.department === 'string' ? req.query.department : undefined;
+  const course = typeof req.query.course === 'string' ? req.query.course : undefined;
+  const year_level =
+    typeof req.query.year_level === 'string'
+      ? req.query.year_level
+      : typeof req.query.yearLevel === 'string'
+      ? req.query.yearLevel
+      : undefined;
+  const interest = typeof req.query.interest === 'string' ? req.query.interest : undefined;
+  const sortBy = typeof req.query.sortBy === 'string' ? (req.query.sortBy as any) : 'match';
+  const limit = req.query.limit ? Number(req.query.limit) : undefined;
+  const offset = req.query.offset ? Number(req.query.offset) : undefined;
+
+  const profiles = await profileService.listProfiles({
+    excludeId: req.userId as string,
+    viewerId: req.userId as string,
+    search,
+    department,
+    course,
+    year_level,
+    interest,
+    sortBy,
+    limit,
+    offset,
+  });
   res.status(200).json(profiles);
 });
 

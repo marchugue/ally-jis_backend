@@ -31,3 +31,15 @@ export interface PaginatedFollowList {
   items: FollowListItem[];
   nextCursor: string | null;
 }
+
+export type FollowSortBy = 'recent' | 'name';
+
+export interface FollowFilterOptions {
+  search?: string;
+  department?: string;
+  course?: string;
+  year_level?: string;
+  sortBy?: FollowSortBy;
+  limit?: number;
+  cursor?: string | null;
+}

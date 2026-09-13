@@ -1,7 +1,21 @@
 import { supabaseAdmin } from '../../config/supabase';
 import type { NotificationRow } from '../types/notification.types';
 
-const NOTIFICATION_COLUMNS = 'id, user_id, type, title, description, is_read, from_user_id, created_at, from_user:profiles!from_user_id(id, avatar_url, full_name, username)';
+const NOTIFICATION_COLUMNS = 'id, user_id, type, title, description, is_read, from_user_id, target_id, post_id, comment_id, created_at, from_user:profiles!from_user_id(id, avatar_url, full_name, username)';
+const NOTIFICATION_COLUMNS_FALLBACK = 'id, user_id, type, title, description, is_read, from_user_id, created_at, from_user:profiles!from_user_id(id, avatar_url, full_name, username)';
+
+function isMissingColumnError(error: any): boolean {
+  if (!error) return false;
+  return (
+    error.code === 'PGRST204' ||
+    error.code === '42703' ||
+    Boolean(
+      error.message?.includes('post_id') ||
+      error.message?.includes('comment_id') ||
+      error.message?.includes('target_id')
+    )
+  );
+}
 
 /**
  * GET /notifications?limit=20
@@ -14,7 +28,19 @@ export async function findByUser(userId: string, limit: number): Promise<Notific
     .order('created_at', { ascending: false })
     .limit(limit);
 
-  if (error) throw error;
+  if (error) {
+    if (isMissingColumnError(error)) {
+      const fallback = await supabaseAdmin
+        .from('notifications')
+        .select(NOTIFICATION_COLUMNS_FALLBACK)
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false })
+        .limit(limit);
+      if (fallback.error) throw fallback.error;
+      return (fallback.data as NotificationRow[]) ?? [];
+    }
+    throw error;
+  }
   return (data as NotificationRow[]) ?? [];
 }
 
@@ -29,7 +55,19 @@ export async function findFriendRequests(userId: string): Promise<NotificationRo
     .eq('type', 'friend_request')
     .order('created_at', { ascending: false });
 
-  if (error) throw error;
+  if (error) {
+    if (isMissingColumnError(error)) {
+      const fallback = await supabaseAdmin
+        .from('notifications')
+        .select(NOTIFICATION_COLUMNS_FALLBACK)
+        .eq('user_id', userId)
+        .eq('type', 'friend_request')
+        .order('created_at', { ascending: false });
+      if (fallback.error) throw fallback.error;
+      return (fallback.data as NotificationRow[]) ?? [];
+    }
+    throw error;
+  }
   return (data as NotificationRow[]) ?? [];
 }
 

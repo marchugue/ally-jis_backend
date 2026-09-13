@@ -80,7 +80,7 @@ export async function register(payload: RegisterPayload): Promise<RegisterRespon
     email, password, username, bio, department, course, year_level, interests,
     organizations, avatar_url, zodiac_sign, personality_type, music_taste,
     movie_interests, age_range, match_gender_preference,
-    email_type, student_id_url,
+    email_type, student_id_url, student_id_back_url,
   } = payload;
 
   const registrationsOpen = await adminSettingsService.areRegistrationsEnabled();
@@ -118,8 +118,9 @@ export async function register(payload: RegisterPayload): Promise<RegisterRespon
     email_type: resolvedEmailType,
     chmsu_auto_verified: isChmsuEmail,
   };
-  if (!isChmsuEmail && student_id_url) {
-    profileUpdate.student_id_url = student_id_url;
+  if (!isChmsuEmail && (student_id_url || student_id_back_url)) {
+    if (student_id_url) profileUpdate.student_id_url = student_id_url;
+    if (student_id_back_url) profileUpdate.student_id_back_url = student_id_back_url;
     profileUpdate.pending_student_verification = true;
     profileUpdate.student_verification_status = 'pending';
   }
@@ -166,6 +167,22 @@ export async function login(payload: LoginPayload): Promise<AuthSession> {
 
 export async function logout(accessToken: string): Promise<void> {
   await authModel.signOut(accessToken);
+}
+
+export async function refresh(refreshToken: string): Promise<AuthSession> {
+  if (!refreshToken) {
+    throw new HttpError('Refresh token is required', 400);
+  }
+
+  let data: { user: SupabaseAuthUser; session: SupabaseSession };
+  try {
+    data = await authModel.refreshSession(refreshToken);
+  } catch {
+    throw new HttpError('Invalid or expired refresh token', 401);
+  }
+
+  const profile = await authModel.findProfileById(data.user.id);
+  return buildAuthSession({ user: data.user, session: data.session, profile });
 }
 
 /**
@@ -360,9 +377,11 @@ export async function cancelRegistration(userId: string): Promise<void> {
  */
 export async function saveStudentIdUpload(
   userId: string,
-  file: { buffer: Buffer; originalname: string; mimetype: string }
-): Promise<string> {
-  const key = `student-ids/${userId}/${Date.now()}-${file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+  file: { buffer: Buffer; originalname: string; mimetype: string },
+  side: 'front' | 'back' = 'front'
+): Promise<{ url: string; side: 'front' | 'back' }> {
+  const sidePrefix = side === 'back' ? 'back-' : 'front-';
+  const key = `student-ids/${userId}/${Date.now()}-${sidePrefix}${file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
 
   let publicUrl = await uploadToR2Storage({ path: key, buffer: file.buffer, contentType: file.mimetype });
 
@@ -382,14 +401,21 @@ export async function saveStudentIdUpload(
   }
 
   // Update profile record in Postgres
+  const isBack = side === 'back';
+  const profileUpdate: Record<string, unknown> = {
+    student_verification_status: 'pending',
+    pending_student_verification: true,
+    updated_at: new Date().toISOString(),
+  };
+  if (isBack) {
+    profileUpdate.student_id_back_url = publicUrl;
+  } else {
+    profileUpdate.student_id_url = publicUrl;
+  }
+
   const { error: profileError } = await supabaseAdmin
     .from('profiles')
-    .update({
-      student_id_url: publicUrl,
-      student_verification_status: 'pending',
-      pending_student_verification: true,
-      updated_at: new Date().toISOString(),
-    })
+    .update(profileUpdate)
     .eq('id', userId);
 
   if (profileError) {
@@ -401,18 +427,23 @@ export async function saveStudentIdUpload(
     const { data: userRes } = await supabaseAdmin.auth.admin.getUserById(userId);
     if (userRes?.user) {
       const existingMeta = userRes.user.user_metadata || {};
+      const metaUpdate: Record<string, unknown> = {
+        ...existingMeta,
+        student_verification_status: 'pending',
+        pending_student_verification: true,
+      };
+      if (isBack) {
+        metaUpdate.student_id_back_url = publicUrl;
+      } else {
+        metaUpdate.student_id_url = publicUrl;
+      }
       await supabaseAdmin.auth.admin.updateUserById(userId, {
-        user_metadata: {
-          ...existingMeta,
-          student_verification_status: 'pending',
-          pending_student_verification: true,
-          student_id_url: publicUrl,
-        },
+        user_metadata: metaUpdate,
       });
     }
   } catch (authErr) {
     console.error('Failed to sync auth user_metadata for student ID upload:', authErr);
   }
 
-  return publicUrl;
+  return { url: publicUrl, side };
 }

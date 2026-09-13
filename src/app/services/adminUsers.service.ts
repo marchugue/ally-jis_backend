@@ -105,6 +105,7 @@ export interface PendingVerificationItem {
   department: string | null;
   course: string | null;
   student_id_url: string | null;
+  student_id_back_url?: string | null;
   student_verification_status: string;
   created_at: string;
 }
@@ -113,7 +114,7 @@ export async function listPendingVerifications(): Promise<PendingVerificationIte
   const { supabaseAdmin } = await import('../../config/supabase');
   const { data, error } = await supabaseAdmin
     .from('profiles')
-    .select('id, username, full_name, email, avatar_url, department, course, student_id_url, student_verification_status, created_at')
+    .select('id, username, full_name, email, avatar_url, department, course, student_id_url, student_id_back_url, student_verification_status, created_at')
     .or('student_verification_status.eq.pending,pending_student_verification.eq.true')
     .order('created_at', { ascending: true });
 

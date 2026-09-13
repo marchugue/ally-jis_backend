@@ -26,6 +26,9 @@ router.use(authMiddleware);
 // GET /api/feed
 router.get('/', feedController.listFeed);
 
+// GET /api/feed/discover
+router.get('/discover', feedController.listDiscoverFeed);
+
 // GET /api/feed/users/:userId
 router.get('/users/:userId', feedController.listPostsByAuthor);
 

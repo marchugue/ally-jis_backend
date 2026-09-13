@@ -31,7 +31,9 @@ router.use('/presence', presenceRoutes);
 router.use('/feed', feedRoutes);
 router.use('/moderation', moderationRoutes);
 router.use('/match', matchRoutes);
+router.use('/matchmaking', matchRoutes);
 router.use('/follows', followRoutes);
+router.use('/follow', followRoutes);
 router.use('/admin', adminRoutes);
 
 export default router;

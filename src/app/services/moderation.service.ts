@@ -33,6 +33,8 @@ export async function createReport(reporterId: string, payload: ReportUserPayloa
     reportedUserId: payload.reportedUserId,
     violationId: payload.violationId,
     conversationId: payload.conversationId ?? null,
+    postId: payload.postId ?? null,
+    notes: payload.notes ?? null,
   });
 }
 

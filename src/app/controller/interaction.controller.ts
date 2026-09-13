@@ -77,12 +77,19 @@ export const relationship = asyncHandler(async (req: Request, res: Response) => 
   res.status(200).json(result);
 });
 
-// GET /interactions/allies/:userId?cursor=&limit=
+// GET /interactions/allies/:userId?cursor=&limit=&search=&department=&course=&year_level=&sortBy=
 export const listAllies = asyncHandler(async (req: Request, res: Response) => {
   const targetUserId = String(req.params.userId);
   const cursor = typeof req.query.cursor === 'string' ? req.query.cursor : null;
   const limit = req.query.limit ? Number(req.query.limit) : undefined;
-  const result = await interactionService.listAllies(targetUserId, cursor, limit);
+  const filters = {
+    search: typeof req.query.search === 'string' ? req.query.search : undefined,
+    department: typeof req.query.department === 'string' ? req.query.department : undefined,
+    course: typeof req.query.course === 'string' ? req.query.course : undefined,
+    year_level: typeof req.query.year_level === 'string' ? req.query.year_level : undefined,
+    sortBy: req.query.sortBy === 'name' ? ('name' as const) : ('recent' as const),
+  };
+  const result = await interactionService.listAllies(targetUserId, cursor, limit, filters);
   res.status(200).json(result);
 });
 

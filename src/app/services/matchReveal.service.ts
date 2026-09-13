@@ -14,7 +14,10 @@ import { stageName } from '../constants/progression';
 import type { RevealData, RevealPartnerView, TimelineData, TimelinePostView } from '../types/matchReveal.types';
 
 async function getParticipantMatch(matchId: string, userId: string) {
-  const match = await matchModel.getMatchById(matchId);
+  let match = await matchModel.getMatchById(matchId);
+  if (!match) {
+    match = await matchModel.getMatchByConversationId(matchId);
+  }
   if (!match) throw new HttpError('Match not found', 404);
   if (match.user_a_id !== userId && match.user_b_id !== userId) {
     throw new HttpError('You are not part of this match', 403);

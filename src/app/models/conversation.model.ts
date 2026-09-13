@@ -1,7 +1,7 @@
 import { supabaseAdmin } from '../../config/supabase';
 import type { ConversationMemberRow, ConversationRow, MessageReactionRow, MessageRow } from '../types/conversation.types';
 
-const MEMBER_PROFILE_COLUMNS = 'id, full_name, username, avatar_url, interests';
+const MEMBER_PROFILE_COLUMNS = 'id, full_name, username, avatar_url, interests, course, department';
 
 /**
  * Returns the conversation_ids the given user belongs to, excluding any
@@ -396,18 +396,34 @@ export async function createMessageNotification(input: {
   userId: string;
   fromUserId: string;
   description: string;
+  conversationId?: string;
 }): Promise<void> {
-  const { userId, fromUserId, description } = input;
+  const { userId, fromUserId, description, conversationId } = input;
 
-  const { error } = await supabaseAdmin.from('notifications').insert({
+  const descWithMeta = conversationId
+    ? `<!--meta:${JSON.stringify({ targetId: conversationId })}-->${description}`
+    : description;
+
+  const insertPayload: Record<string, any> = {
     user_id: userId,
     type: 'message',
     title: 'New Message',
-    description,
+    description: descWithMeta,
     from_user_id: fromUserId,
-  });
+  };
+  if (conversationId) insertPayload.target_id = conversationId;
 
-  if (error) throw error;
+  let { error } = await supabaseAdmin.from('notifications').insert(insertPayload);
+
+  if (error && (error.code === 'PGRST204' || error.message?.includes('target_id'))) {
+    delete insertPayload.target_id;
+    const retry = await supabaseAdmin.from('notifications').insert(insertPayload);
+    error = retry.error;
+  }
+
+  if (error) {
+    console.error('[createMessageNotification] Notification insert failed:', error);
+  }
 }
 
 /**
@@ -422,18 +438,74 @@ export async function createMessageNotification(input: {
 export async function createAnonymousMatchNotification(input: {
   userId: string;
   description: string;
+  senderAlias?: string;
+  conversationId?: string;
 }): Promise<void> {
-  const { userId, description } = input;
+  const { userId, description, senderAlias = 'Anonymous Ally', conversationId } = input;
+  const title = `${senderAlias} messaged you`;
 
-  const { error } = await supabaseAdmin.from('notifications').insert({
-    user_id: userId,
-    type: 'anon_match',
-    title: 'Your anonymous match sent a message',
-    description,
-    from_user_id: null,
-  });
+  const descWithMeta = conversationId
+    ? `<!--meta:${JSON.stringify({ targetId: conversationId })}-->${description}`
+    : description;
 
-  if (error) throw error;
+  // Check if an unread anonymous match notification already exists for this user
+  const { data: existing } = await supabaseAdmin
+    .from('notifications')
+    .select('id')
+    .eq('user_id', userId)
+    .eq('type', 'anon_match')
+    .eq('is_read', false)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (existing?.id) {
+    const updatePayload: Record<string, any> = {
+      title,
+      description: descWithMeta,
+      created_at: new Date().toISOString(),
+    };
+    if (conversationId) updatePayload.target_id = conversationId;
+
+    let { error } = await supabaseAdmin
+      .from('notifications')
+      .update(updatePayload)
+      .eq('id', existing.id);
+
+    if (error && (error.code === 'PGRST204' || error.message?.includes('target_id'))) {
+      delete updatePayload.target_id;
+      const retry = await supabaseAdmin
+        .from('notifications')
+        .update(updatePayload)
+        .eq('id', existing.id);
+      error = retry.error;
+    }
+
+    if (error) {
+      console.error('[createAnonymousMatchNotification] Notification update failed:', error);
+    }
+  } else {
+    const insertPayload: Record<string, any> = {
+      user_id: userId,
+      type: 'anon_match',
+      title,
+      description: descWithMeta,
+      from_user_id: null,
+    };
+    if (conversationId) insertPayload.target_id = conversationId;
+
+    let { error } = await supabaseAdmin.from('notifications').insert(insertPayload);
+
+    if (error && (error.code === 'PGRST204' || error.message?.includes('target_id'))) {
+      delete insertPayload.target_id;
+      const retry = await supabaseAdmin.from('notifications').insert(insertPayload);
+      error = retry.error;
+    }
+
+    if (error) {
+      console.error('[createAnonymousMatchNotification] Notification insert failed:', error);
+    }
+  }
 }
 
 export async function updateIcebreakersEnabled(conversationId: string, userId: string, enabled: boolean): Promise<void> {

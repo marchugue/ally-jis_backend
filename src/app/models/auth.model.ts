@@ -124,6 +124,21 @@ export async function signInWithPassword(input: {
   return data as unknown as { user: SupabaseAuthUser; session: SupabaseSession };
 }
 
+/**
+ * Refreshes an expired access token using a valid Supabase refresh token.
+ * Returns the fresh user and renewed session (including new refresh token).
+ */
+export async function refreshSession(
+  refreshToken: string
+): Promise<{ user: SupabaseAuthUser; session: SupabaseSession }> {
+  const { data, error } = await supabasePublic.auth.refreshSession({ refresh_token: refreshToken });
+  if (error) throw error;
+  if (!data.user || !data.session) {
+    throw new Error('Failed to refresh session');
+  }
+  return data as unknown as { user: SupabaseAuthUser; session: SupabaseSession };
+}
+
 export async function getUserEmailStatus(id: string): Promise<EmailVerification> {
   const { data, error } = await supabaseAdmin.auth.admin.getUserById(id);
   if (error) throw error;

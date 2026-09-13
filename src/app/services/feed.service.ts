@@ -1,8 +1,11 @@
 import * as feedModel from '../models/feed.model';
+import * as profileModel from '../models/profile.model';
+import * as followModel from '../models/follow.model';
 import { HttpError } from '../types/auth.types';
 import type {
   CommentRow,
   CommentWithAuthor,
+  FeedFilterOptions,
   LikeStatusResponse,
   PostAudience,
   PostRow,
@@ -28,18 +31,27 @@ async function hydratePosts(viewerId: string, posts: PostRow[]): Promise<PostWit
 
   const authorIds = [...new Set(posts.map((p) => p.author_id))];
   const postIds = posts.map((p) => p.id);
-  const [profileMap, likedIds, mediaMap] = await Promise.all([
+  const [profileMap, likedIds, mediaMap, followingIds] = await Promise.all([
     feedModel.findProfilesByIds(authorIds),
     feedModel.findLikedPostIds(viewerId, postIds),
     feedModel.findMediaForPosts(postIds),
+    followModel.getFollowingIds(viewerId),
   ]);
 
-  return posts.map((post) => ({
-    ...post,
-    author: profileMap.get(post.author_id) ?? null,
-    liked_by_me: likedIds.has(post.id),
-    media: mediaMap.get(post.id) ?? [],
-  }));
+  return posts.map((post) => {
+    const author = profileMap.get(post.author_id);
+    return {
+      ...post,
+      author: author
+        ? {
+            ...author,
+            is_following: viewerId === post.author_id ? false : followingIds.has(post.author_id),
+          }
+        : null,
+      liked_by_me: likedIds.has(post.id),
+      media: mediaMap.get(post.id) ?? [],
+    };
+  });
 }
 
 async function hydrateComments(viewerId: string, comments: CommentRow[]): Promise<CommentWithAuthor[]> {
@@ -68,22 +80,154 @@ async function hydrateComments(viewerId: string, comments: CommentRow[]): Promis
  */
 export async function listFeed(
   viewerId: string,
-  options: { limit?: number; before?: string }
+  options: FeedFilterOptions = {}
 ): Promise<PostWithAuthor[]> {
-
-  try {                                                    // ← add
+  try {
     const limit = clampLimit(options.limit);
-    const candidates = await feedModel.findFeedCandidates(limit, options.before);
+    const filterType = options.filter || 'all';
+
+    // If discover or popular filter is selected, fetch a larger pool to score & rank
+    const candidatePoolSize =
+      filterType === 'discover' || filterType === 'popular'
+        ? Math.max(limit * 3, 60)
+        : Math.max(limit * 2, 40);
+
+    const candidates = await feedModel.findFeedCandidates(candidatePoolSize, options.before);
     const connectionIds = await feedModel.findAcceptedConnectionIds(viewerId);
+
+    // 1. Initial visibility filtering (author itself, public, or accepted connection)
     const visible = candidates.filter(
       (post) => post.author_id === viewerId || post.audience === 'public' || connectionIds.has(post.author_id)
     );
-    return hydratePosts(viewerId, visible);
+
+    // 2. Hydrate posts with authors & media
+    let hydrated = await hydratePosts(viewerId, visible);
+
+    // 3. Social graph filtering (allies or following)
+    if (filterType === 'allies') {
+      hydrated = hydrated.filter((post) => post.author_id === viewerId || connectionIds.has(post.author_id));
+    } else if (filterType === 'following') {
+      hydrated = hydrated.filter((post) => post.author_id === viewerId || Boolean(post.author?.is_following));
+    }
+
+    // 4. Attribute filters
+    if (options.department) {
+      const dept = options.department.toLowerCase().trim();
+      hydrated = hydrated.filter((post) => post.author?.department?.toLowerCase().trim() === dept);
+    }
+
+    if (options.course) {
+      const course = options.course.toLowerCase().trim();
+      hydrated = hydrated.filter((post) => post.author?.course?.toLowerCase().trim() === course);
+    }
+
+    if (options.interest) {
+      const targetInterest = options.interest.toLowerCase().trim();
+      hydrated = hydrated.filter((post) => {
+        const authorInterests = (post.author?.interests || []).map((i) => i.toLowerCase().trim());
+        const postText = post.content.toLowerCase();
+        return authorInterests.includes(targetInterest) || postText.includes(targetInterest);
+      });
+    }
+
+    if (options.search) {
+      const q = options.search.toLowerCase().trim();
+      hydrated = hydrated.filter((post) => {
+        return (
+          post.content.toLowerCase().includes(q) ||
+          post.author?.full_name?.toLowerCase().includes(q) ||
+          post.author?.username?.toLowerCase().includes(q)
+        );
+      });
+    }
+
+    if (options.mediaOnly) {
+      hydrated = hydrated.filter((post) => post.media && post.media.length > 0);
+    }
+
+    // 5. Discover / Popular Algorithm:
+    // "i want the discover newsfeed algorithm is, the interest of the user relevant and more followers or popularity based"
+    if (filterType === 'discover' || filterType === 'popular') {
+      const viewerProfile = await profileModel.findById(viewerId);
+
+      const viewerInterests = new Set(
+        (viewerProfile?.interests ?? []).map((i) => i.toLowerCase().trim())
+      );
+      const viewerDept = viewerProfile?.department?.toLowerCase().trim();
+      const viewerCourse = viewerProfile?.course?.toLowerCase().trim();
+
+      // Batch get author follower counts for author popularity
+      const authorIds = [...new Set(hydrated.map((p) => p.author_id))];
+      const followerCounts = await Promise.all(
+        authorIds.map(async (authorId) => {
+          const { followersCount } = await followModel.getCounts(authorId).catch(() => ({ followersCount: 0 }));
+          return [authorId, followersCount] as const;
+        })
+      );
+      const followerCountMap = new Map(followerCounts);
+
+      const scoredPosts = hydrated.map((post) => {
+        let interestScore = 0;
+        let popularityScore = 0;
+        let affinityScore = 0;
+
+        // A. Interest Relevance Score (0 - 50 pts)
+        const postContentLower = (post.content || '').toLowerCase();
+        for (const interest of viewerInterests) {
+          if (interest.length > 2 && postContentLower.includes(interest)) {
+            interestScore += 12;
+          }
+        }
+
+        if (post.author?.interests && Array.isArray(post.author.interests)) {
+          for (const authorInterest of post.author.interests) {
+            if (viewerInterests.has(authorInterest.toLowerCase().trim())) {
+              interestScore += 10;
+            }
+          }
+        }
+        interestScore = Math.min(50, interestScore);
+
+        if (viewerDept && post.author?.department?.toLowerCase().trim() === viewerDept) {
+          interestScore += 6;
+        }
+        if (viewerCourse && post.author?.course?.toLowerCase().trim() === viewerCourse) {
+          interestScore += 4;
+        }
+
+        // B. Popularity Score (0 - 45 pts)
+        const likes = post.likes_count || 0;
+        const comments = post.comments_count || 0;
+        const engagement = Math.min(25, likes * 2 + comments * 3.5);
+
+        const authorFollowers = followerCountMap.get(post.author_id) || 0;
+        const followerBoost = Math.min(20, Math.log10(authorFollowers + 1) * 8);
+
+        popularityScore = engagement + followerBoost;
+
+        // C. Social Affinity (0 - 15 pts)
+        if (post.author?.is_following) affinityScore += 8;
+        if (connectionIds.has(post.author_id)) affinityScore += 12;
+
+        // D. Time Decay Multiplier (half-life of ~36 hours)
+        const postTime = new Date(post.created_at).getTime();
+        const ageHours = Math.max(0, (Date.now() - postTime) / (1000 * 60 * 60));
+        const timeDecay = 1 / Math.pow(1 + ageHours / 36, 1.2);
+
+        const totalScore = (interestScore * 1.3 + popularityScore * 1.1 + affinityScore) * timeDecay;
+
+        return { post, totalScore };
+      });
+
+      scoredPosts.sort((a, b) => b.totalScore - a.totalScore);
+      hydrated = scoredPosts.map((sp) => sp.post);
+    }
+
+    return hydrated.slice(0, limit);
   } catch (err) {
-    console.log('listFeed called, viewerId:', viewerId);                                          // ← add
-    console.error('listFeed error:', err);                 // ← add
-    throw err;                                             // ← add
-  }                                                        // ← add
+    console.error('listFeed error:', err);
+    throw err;
+  }
 }
 
 /**
@@ -241,6 +385,7 @@ export async function likePost(userId: string, postId: string): Promise<LikeStat
       title: 'New like on your post',
       description: postPreview,
       fromUserId: userId,
+      postId,
     });
   }
 
@@ -317,7 +462,7 @@ export async function createComment(
   postId: string,
   input: { content: string; parentCommentId?: string | null }
 ): Promise<CommentWithAuthor> {
-  const content = input.content?.trim();
+  let content = input.content?.trim();
   if (!content) {
     throw new HttpError('Comment content cannot be empty', 400);
   }
@@ -333,6 +478,8 @@ export async function createComment(
   }
 
   let parentCommentId: string | null = null;
+  let parentAuthorId: string | null = null;
+
   if (input.parentCommentId) {
     const parent = await feedModel.findCommentById(input.parentCommentId);
     if (!parent || parent.post_id !== postId) {
@@ -342,32 +489,74 @@ export async function createComment(
       throw new HttpError('Replies can only be one level deep', 400);
     }
     parentCommentId = parent.id;
+    parentAuthorId = parent.author_id;
+
+    // Secure backend hashtag mention for replies:
+    // If the comment doesn't already mention the parent author with hashtag, prefix it
+    const profileMap = await feedModel.findProfilesByIds([parent.author_id]);
+    const parentProfile = profileMap.get(parent.author_id);
+    const parentUsername = parentProfile?.username;
+    if (parentUsername) {
+      const mentionTag = `#${parentUsername}`;
+      if (!content.includes(mentionTag)) {
+        content = `${mentionTag} ${content}`;
+      }
+    }
   }
 
   const comment = await feedModel.insertComment({ postId, authorId, content, parentCommentId });
 
-  // Notify the post author (unless commenting on your own post).
+  const contentPreview = content.trim().slice(0, 120);
+
+  // 1. Notify the post author (unless commenting on your own post).
   if (post.author_id !== authorId) {
     await feedModel.createNotification({
       userId: post.author_id,
       type: 'post_comment',
       title: 'New comment on your post',
-      description: content,
+      description: contentPreview,
       fromUserId: authorId,
+      postId,
     });
   }
 
-  // Replies also notify the parent comment's author.
-  if (parentCommentId) {
-    const parent = await feedModel.findCommentById(parentCommentId);
-    if (parent && parent.author_id !== authorId) {
-      await feedModel.createNotification({
-        userId: parent.author_id,
-        type: 'comment_reply',
-        title: 'New reply to your comment',
-        description: content,
-        fromUserId: authorId,
-      });
+  // 2. Replies also notify the parent comment's author.
+  //    Store commentId = parentCommentId so the recipient can deep-link into reply mode.
+  if (parentCommentId && parentAuthorId && parentAuthorId !== authorId) {
+    await feedModel.createNotification({
+      userId: parentAuthorId,
+      type: 'comment_reply',
+      title: 'New reply to your comment',
+      description: contentPreview,
+      fromUserId: authorId,
+      postId,
+      commentId: parentCommentId,
+    });
+  }
+
+  // 3. Scan comment for hashtag mentions: e.g. #username
+  const mentionMatches = content.match(/(?:^|\s)#([a-zA-Z0-9_]+)/g);
+  if (mentionMatches) {
+    const rawUsernames = mentionMatches.map((m) => m.trim().replace(/^#/, ''));
+    const uniqueUsernames = [...new Set(rawUsernames)];
+    const mentionedProfiles = await feedModel.findProfilesByUsernames(uniqueUsernames);
+
+    const alreadyNotified = new Set<string>([authorId]);
+    if (post.author_id !== authorId) alreadyNotified.add(post.author_id);
+    if (parentAuthorId && parentAuthorId !== authorId) alreadyNotified.add(parentAuthorId);
+
+    for (const profile of mentionedProfiles) {
+      if (!alreadyNotified.has(profile.id)) {
+        alreadyNotified.add(profile.id);
+        await feedModel.createNotification({
+          userId: profile.id,
+          type: 'comment_mention',
+          title: 'Mentioned you in a comment',
+          description: contentPreview,
+          fromUserId: authorId,
+          postId,
+        });
+      }
     }
   }
 
@@ -441,13 +630,15 @@ export async function likeComment(userId: string, commentId: string): Promise<Li
   await feedModel.likeComment(commentId, userId);
 
   if (comment.author_id !== userId) {
-    const commentPreview = comment.content?.trim().slice(0, 80) ?? '';
+    const commentPreview = comment.content?.trim().slice(0, 120) ?? '';
     await feedModel.createNotification({
       userId: comment.author_id,
       type: 'comment_like',
       title: 'New like on your comment',
       description: commentPreview,
       fromUserId: userId,
+      postId: comment.post_id,
+      commentId,
     });
   }
 

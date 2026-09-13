@@ -70,6 +70,9 @@ export interface ConversationMatchInfo {
   partnerAlias: string | null;
   partnerAvatar: string | null;
   ended: boolean;
+  status?: string;
+  chatExpiresAt?: string | null;
+  confirmedAt?: string | null;
 }
 
 export interface ConversationIdResponse {

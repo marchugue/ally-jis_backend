@@ -56,14 +56,21 @@ export async function getQueueEntry(userId: string): Promise<QueueRow | null> {
   return data as QueueRow | null;
 }
 
-/** Only removes the row if the user is still 'searching' — once reserved
- * or matched, leaving the queue happens implicitly via decline/end. */
+/** Purges the queue entry for the user unconditionally so no lingering
+ * searching or reserved rows remain when leaving or after matching. */
 export async function leaveQueue(userId: string): Promise<void> {
   const { error } = await supabaseAdmin
     .from('matchmaking_queue')
     .delete()
-    .eq('user_id', userId)
-    .eq('status', 'searching');
+    .eq('user_id', userId);
+  if (error) throw error;
+}
+
+export async function purgeQueueEntry(userId: string): Promise<void> {
+  const { error } = await supabaseAdmin
+    .from('matchmaking_queue')
+    .delete()
+    .eq('user_id', userId);
   if (error) throw error;
 }
 
@@ -259,6 +266,8 @@ export interface ConversationMatchLookup {
   myAvatar: string | null;
   partnerAlias: string | null;
   partnerAvatar: string | null;
+  chatExpiresAt: string | null;
+  confirmedAt: string | null;
 }
 
 /**
@@ -277,7 +286,7 @@ export async function findMatchInfoForConversations(
   const { data, error } = await supabaseAdmin
     .from('matches')
     .select(
-      'id, conversation_id, status, current_stage, day_streak, revealed_at, user_a_id, user_b_id, user_a_alias, user_a_avatar, user_b_alias, user_b_avatar',
+      'id, conversation_id, status, current_stage, day_streak, revealed_at, user_a_id, user_b_id, user_a_alias, user_a_avatar, user_b_alias, user_b_avatar, chat_expires_at, confirmed_at',
     )
     .in('conversation_id', conversationIds);
   if (error) throw error;
@@ -296,9 +305,53 @@ export async function findMatchInfoForConversations(
       myAvatar: isUserA ? row.user_a_avatar : row.user_b_avatar,
       partnerAlias: isUserA ? row.user_b_alias : row.user_a_alias,
       partnerAvatar: isUserA ? row.user_b_avatar : row.user_a_avatar,
+      chatExpiresAt: row.chat_expires_at ?? null,
+      confirmedAt: row.confirmed_at ?? null,
     });
   }
   return map;
+}
+
+export async function confirmMatch(matchId: string): Promise<MatchRow | null> {
+  const { data, error } = await supabaseAdmin
+    .from('matches')
+    .update({
+      status: 'confirmed',
+      confirmed_at: new Date().toISOString(),
+      chat_expires_at: null,
+    })
+    .eq('id', matchId)
+    .select()
+    .single();
+  if (error) throw error;
+  return data as MatchRow | null;
+}
+
+export async function updateChatExpiry(matchId: string, expiresAt: string): Promise<void> {
+  const { error } = await supabaseAdmin
+    .from('matches')
+    .update({ chat_expires_at: expiresAt })
+    .eq('id', matchId);
+  if (error) throw error;
+}
+
+export async function hasBothMembersMessaged(conversationId: string, userAId: string, userBId: string): Promise<boolean> {
+  const [resA, resB] = await Promise.all([
+    supabaseAdmin
+      .from('messages')
+      .select('id', { count: 'exact', head: true })
+      .eq('conversation_id', conversationId)
+      .eq('sender_id', userAId)
+      .limit(1),
+    supabaseAdmin
+      .from('messages')
+      .select('id', { count: 'exact', head: true })
+      .eq('conversation_id', conversationId)
+      .eq('sender_id', userBId)
+      .limit(1),
+  ]);
+
+  return ((resA.count ?? 0) > 0) && ((resB.count ?? 0) > 0);
 }
 
 /** Called once a friend request between the two sides of a match is

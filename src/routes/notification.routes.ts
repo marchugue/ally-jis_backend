@@ -13,9 +13,17 @@ import { Router } from 'express';
 import * as notificationController from '../app/controller/notification.controller';
 import { authMiddleware } from '../app/middleware/auth.middleware';
 
+import { checkAndSendStreakReminders } from '../app/services/streakReminder.service';
+
 const router = Router();
 
 router.use(authMiddleware);
+
+// POST /api/notifications/test-streak-reminders (trigger manual check)
+router.post('/test-streak-reminders', async (_req, res) => {
+  const result = await checkAndSendStreakReminders();
+  res.status(200).json(result);
+});
 
 // GET /api/notifications/friend-requests
 router.get('/friend-requests', notificationController.friendRequests);

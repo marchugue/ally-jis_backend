@@ -15,6 +15,8 @@ export interface CreateReportParams {
   reportedUserId: string;
   violationId: string;
   conversationId?: string | null;
+  postId?: string | null;
+  notes?: string | null;
 }
 
 export interface BlockUserResult {
@@ -31,6 +33,8 @@ export interface ReportUserPayload {
   reportedUserId: string;
   violationId: string;
   conversationId?: string | null;
+  postId?: string | null;
+  notes?: string | null;
 }
 
 export interface BlockedUserRow {

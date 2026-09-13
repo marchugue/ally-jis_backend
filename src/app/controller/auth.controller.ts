@@ -12,6 +12,11 @@ import { asyncHandler } from '../utils/asyncHandler';
 import { HttpError, type LoginPayload, type RegisterPayload } from '../types/auth.types';
 import { env } from '../../config/env';
 import { uploadToR2Storage } from '../../config/r2';
+import { 
+  setRefreshTokenCookie, 
+  clearRefreshTokenCookie, 
+  REFRESH_TOKEN_COOKIE_NAME 
+} from '../utils/cookie.util';
 
 export const register = asyncHandler(async (req: Request, res: Response) => {
   const payload = req.body as RegisterPayload;
@@ -23,12 +28,34 @@ export const register = asyncHandler(async (req: Request, res: Response) => {
 export const login = asyncHandler(async (req: Request, res: Response) => {
   const { email, password } = req.body as LoginPayload;
   const session = await authService.login({ email, password });
+  if (session.refreshToken) {
+    setRefreshTokenCookie(res, session.refreshToken);
+  }
   res.status(200).json(session);
 });
 
 export const logout = asyncHandler(async (req: Request, res: Response) => {
   await authService.logout(req.accessToken as string);
+  clearRefreshTokenCookie(res);
   res.status(204).send();
+});
+
+// POST /auth/refresh — silent token refresh (reads cookie or body fallback)
+export const refreshToken = asyncHandler(async (req: Request, res: Response) => {
+  const token = req.cookies?.[REFRESH_TOKEN_COOKIE_NAME] || req.body?.refreshToken;
+
+  if (!token) {
+    throw new HttpError('No refresh token provided', 401);
+  }
+
+  const session = await authService.refresh(token);
+
+  // Extend sliding session expiration (+30 days)
+  if (session.refreshToken) {
+    setRefreshTokenCookie(res, session.refreshToken);
+  }
+
+  res.status(200).json(session);
 });
 
 export const session = asyncHandler(async (req: Request, res: Response) => {
@@ -106,6 +133,9 @@ export const verifyOtp = asyncHandler(async (req: Request, res: Response) => {
 
   // Build and return a real session now that the user is verified
   const session = await authService.buildSessionForUser(userId);
+  if (session.refreshToken) {
+    setRefreshTokenCookie(res, session.refreshToken);
+  }
   res.status(200).json(session);
 });
 
@@ -132,7 +162,7 @@ export const getOtpStatus = asyncHandler(async (req: Request, res: Response) => 
 // POST /auth/student-id/upload — upload student ID image to R2
 // The user must be registered (userId in body) but doesn't need a session yet.
 export const uploadStudentId = asyncHandler(async (req: Request, res: Response) => {
-  const { userId } = req.body as { userId: string };
+  const { userId, side = 'front' } = req.body as { userId: string; side?: 'front' | 'back' };
   const file = req.file;
 
   if (!userId || !file) {
@@ -140,13 +170,17 @@ export const uploadStudentId = asyncHandler(async (req: Request, res: Response) 
     return;
   }
 
-  const url = await authService.saveStudentIdUpload(userId, {
-    buffer: file.buffer,
-    originalname: file.originalname,
-    mimetype: file.mimetype,
-  });
+  const result = await authService.saveStudentIdUpload(
+    userId,
+    {
+      buffer: file.buffer,
+      originalname: file.originalname,
+      mimetype: file.mimetype,
+    },
+    side === 'back' ? 'back' : 'front'
+  );
 
-  res.status(200).json({ url });
+  res.status(200).json(result);
 });
 
 /**

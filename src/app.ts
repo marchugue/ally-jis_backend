@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import cookieParser from 'cookie-parser';
 import routes from './routes';
 import { errorHandler } from './app/middleware/error.middleware';
 import { env } from './config/env';
@@ -30,6 +31,7 @@ app.use(
     credentials: true,
   })
 );
+app.use(cookieParser());
 app.use(express.json());
 app.use('/api', routes);
 app.use(errorHandler);

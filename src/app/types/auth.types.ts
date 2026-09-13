@@ -54,7 +54,8 @@ export interface RegisterPayload {
   match_gender_preference?: string | null;
   // New email type system
   email_type?: 'chmsu' | 'external'; // 'chmsu' = @chmsu.edu.ph, 'external' = any other
-  student_id_url?: string | null;    // R2 URL of uploaded student ID (external path only)
+  student_id_url?: string | null;    // R2 URL of uploaded student ID front (external path only)
+  student_id_back_url?: string | null; // R2 URL of uploaded student ID back (optional)
 }
 
 export interface LoginPayload {

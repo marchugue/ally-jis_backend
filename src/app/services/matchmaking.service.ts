@@ -52,9 +52,13 @@ export async function joinQueue(userId: string): Promise<QueueRow> {
   if (hasPending) {
     const existing = await matchModel.getQueueEntry(userId);
     if (existing) return existing;
-    // Queue row already cleaned up after matching — re-insert so the caller
-    // gets a valid response; frontend picks up the pending match on next poll.
-    return matchModel.joinQueue(userId);
+    return {
+      id: '',
+      user_id: userId,
+      status: 'searching',
+      joined_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
   }
 
   const entry = await matchModel.joinQueue(userId);
@@ -110,6 +114,12 @@ async function tryMatch(requesterId: string): Promise<void> {
 
   const { match_id, candidate_id, compatibility_score } = result;
 
+  // Unconditionally purge matchmaking_queue rows for both users now that a match is reserved
+  await Promise.all([
+    matchModel.purgeQueueEntry(requesterId).catch(() => {}),
+    matchModel.purgeQueueEntry(candidate_id).catch(() => {}),
+  ]);
+
   // Assign anonymous identities now, before either side sees anything —
   // there's no "requester vs candidate" order guarantee from the RPC, so
   // this doesn't try to map onto user_a/user_b itself; getIdentityView
@@ -140,6 +150,12 @@ export async function acceptMatch(matchId: string, userId: string): Promise<Matc
     scheduleTimer(matchId, 'chat', CHAT_FIRST_MESSAGE_TIMEOUT_MS, () => {
       void handleChatTimeout(matchId);
     });
+
+    // Make sure matchmaking_queue is cleanly purged for both users
+    await Promise.all([
+      matchModel.purgeQueueEntry(match.user_a_id).catch(() => {}),
+      matchModel.purgeQueueEntry(match.user_b_id).catch(() => {}),
+    ]);
 
     const [identityA, identityB] = await Promise.all([
       matchModel.getIdentityView(matchId, match.user_a_id),
@@ -209,39 +225,58 @@ async function handleChatTimeout(matchId: string): Promise<void> {
  * No-ops if the conversation isn't tied to a live 'chatting' match.
  */
 export async function recordMatchMessage(conversationId: string, senderId: string): Promise<void> {
-  const match = await matchModel.recordMatchMessage(conversationId, senderId);
-  if (!match) return;
+  const currentMatch = await matchModel.getMatchByConversationId(conversationId);
+  if (!currentMatch) return;
 
-  if (match.status === 'confirmed') {
-    clearTimer(match.id, 'chat');
-    const payload = { matchId: match.id, conversationId: match.conversation_id };
-    emitToUser(match.user_a_id, 'matchmaking:match_confirmed', payload);
-    emitToUser(match.user_b_id, 'matchmaking:match_confirmed', payload);
-  } else {
-    // Still waiting on a first message from the other side — someone IS
-    // actively messaging though, so push the expiry deadline out another
-    // full window rather than leaving the original one ticking. Without
-    // this, a match could die mid-conversation just because the *other*
-    // person's first reply happened to land a little later than the
-    // original fixed deadline, even while messages were actively flowing.
-    scheduleTimer(match.id, 'chat', CHAT_FIRST_MESSAGE_TIMEOUT_MS, () => {
-      void handleChatTimeout(match.id);
-    });
-    const payload = { matchId: match.id, streak: match.streak_count };
-    emitToUser(match.user_a_id, 'matchmaking:streak_update', payload);
-    emitToUser(match.user_b_id, 'matchmaking:streak_update', payload);
+  // If already confirmed, ensure timer is cleared and update progression
+  if (currentMatch.status === 'confirmed') {
+    clearTimer(currentMatch.id, 'chat');
+    const isUserA = currentMatch.user_a_id === senderId;
+    const today = phtDateStr();
+    await matchModel.incrementDailyActivity(currentMatch.id, isUserA, today).catch(() => {});
+    await recomputeProgression(currentMatch.id).catch(() => {});
+    return;
   }
 
-  // Day-based streak/stage — separate from the legacy streak_count/
-  // confirmed handling above, which an existing (opaque) RPC owns and
-  // this deliberately doesn't touch. Only tracked once a match is past
-  // the initial handshake, since "days talked" isn't meaningful before
-  // that.
-  if (match.status === 'chatting' || match.status === 'confirmed') {
-    const isUserA = match.user_a_id === senderId;
-    const today = phtDateStr(); // PHT calendar day (UTC+8)
-    await matchModel.incrementDailyActivity(match.id, isUserA, today);
-    await recomputeProgression(match.id);
+  // Check if both members have now sent at least 1 message in this conversation
+  const bothMessaged = await matchModel.hasBothMembersMessaged(
+    conversationId,
+    currentMatch.user_a_id,
+    currentMatch.user_b_id,
+  );
+
+  let match: MatchRow | null = null;
+  if (bothMessaged) {
+    // Both participants have chatted! Confirm the match permanently
+    clearTimer(currentMatch.id, 'chat');
+    match = await matchModel.confirmMatch(currentMatch.id);
+    const payload = { matchId: currentMatch.id, conversationId };
+    emitToUser(currentMatch.user_a_id, 'matchmaking:match_confirmed', payload);
+    emitToUser(currentMatch.user_b_id, 'matchmaking:match_confirmed', payload);
+  } else {
+    // Only one participant has messaged so far — push the expiry deadline out 5 minutes in BOTH DB and timer
+    const newExpiresAt = new Date(Date.now() + CHAT_FIRST_MESSAGE_TIMEOUT_MS).toISOString();
+    await matchModel.updateChatExpiry(currentMatch.id, newExpiresAt).catch(() => {});
+
+    scheduleTimer(currentMatch.id, 'chat', CHAT_FIRST_MESSAGE_TIMEOUT_MS, () => {
+      void handleChatTimeout(currentMatch.id);
+    });
+
+    match = await matchModel.recordMatchMessage(conversationId, senderId).catch(() => null);
+    if (match) {
+      const payload = { matchId: match.id, streak: match.streak_count };
+      emitToUser(match.user_a_id, 'matchmaking:streak_update', payload);
+      emitToUser(match.user_b_id, 'matchmaking:streak_update', payload);
+    }
+  }
+
+  // Day-based streak/stage progression
+  const targetMatch = match ?? currentMatch;
+  if (targetMatch.status === 'chatting' || targetMatch.status === 'confirmed') {
+    const isUserA = targetMatch.user_a_id === senderId;
+    const today = phtDateStr();
+    await matchModel.incrementDailyActivity(targetMatch.id, isUserA, today).catch(() => {});
+    await recomputeProgression(targetMatch.id).catch(() => {});
   }
 }
 
@@ -310,10 +345,18 @@ export async function markRevealedIfMatched(userIdA: string, userIdB: string): P
 // ---------------------------------------------------------------------------
 
 export async function endMatch(matchId: string, userId: string): Promise<MatchRow> {
-  clearAllTimersForMatch(matchId);
-  const match = await matchModel.endMatch(matchId, userId);
+  let targetMatchId = matchId;
+  const matchDirect = await matchModel.getMatchById(matchId);
+  if (!matchDirect) {
+    const matchByConv = await matchModel.getMatchByConversationId(matchId);
+    if (matchByConv) {
+      targetMatchId = matchByConv.id;
+    }
+  }
+  clearAllTimersForMatch(targetMatchId);
+  const match = await matchModel.endMatch(targetMatchId, userId);
   const otherUserId = match.user_a_id === userId ? match.user_b_id : match.user_a_id;
-  emitToUser(otherUserId, 'matchmaking:match_ended', { matchId });
+  emitToUser(otherUserId, 'matchmaking:match_ended', { matchId: targetMatchId });
   return match;
 }
 

@@ -69,6 +69,9 @@ router.post('/register', registerLimiter, authController.register);
 // POST /api/auth/login
 router.post('/login', loginLimiter, authController.login);
 
+// POST /api/auth/refresh — silent session refresh via HttpOnly cookie (never log out)
+router.post('/refresh', authController.refreshToken);
+
 // POST /api/auth/logout
 router.post('/logout', authMiddleware, authController.logout);
 

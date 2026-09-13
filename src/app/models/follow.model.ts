@@ -3,7 +3,7 @@
 import { supabaseAdmin } from '../../config/supabase';
 import type { FollowListItem } from '../types/follow.types';
 
-const FOLLOW_PROFILE_COLUMNS = 'id, username, full_name, avatar_url, course';
+const FOLLOW_PROFILE_COLUMNS = 'id, username, full_name, avatar_url, course, department, year_level';
 
 /** Inserts a follow row. Safe to call if it already exists — upsert with
  * a no-op update rather than throwing on the unique (PK) violation. */
@@ -56,37 +56,107 @@ function mapListItem(row: any, followedAt: string): FollowListItem {
     fullName: row.full_name ?? null,
     avatarUrl: row.avatar_url ?? null,
     course: row.course ?? null,
+    department: row.department ?? null,
+    year_level: row.year_level ?? null,
     followedAt,
-  };
+  } as any;
 }
 
-/** Simple offset pagination (cursor is a stringified offset) — this list
- * isn't expected to reach a size where keyset pagination's extra
- * complexity pays for itself. */
-export async function listFollowers(userId: string, limit: number, offset: number): Promise<FollowListItem[]> {
+/** Simple offset pagination with in-memory filtering for flexible search across joined profiles */
+export async function listFollowers(
+  userId: string,
+  limit: number,
+  offset: number,
+  filters?: { search?: string; department?: string; course?: string; year_level?: string; sortBy?: 'recent' | 'name' }
+): Promise<FollowListItem[]> {
   const { data, error } = await supabaseAdmin
     .from('follows')
     .select(`created_at, follower:profiles!follows_follower_id_fkey(${FOLLOW_PROFILE_COLUMNS})`)
     .eq('followed_id', userId)
-    .order('created_at', { ascending: false })
-    .range(offset, offset + limit - 1);
+    .order('created_at', { ascending: false });
+
   if (error) throw error;
-  return (data ?? [])
+
+  let items = (data ?? [])
     .filter((row: any) => row.follower)
     .map((row: any) => mapListItem(row.follower, row.created_at));
+
+  if (filters?.search) {
+    const s = filters.search.toLowerCase().trim();
+    items = items.filter((item) =>
+      (item.fullName?.toLowerCase() || '').includes(s) ||
+      (item.username?.toLowerCase() || '').includes(s)
+    );
+  }
+
+  if (filters?.department) {
+    const d = filters.department.toLowerCase().trim();
+    items = items.filter((item: any) => (item.department?.toLowerCase() || '') === d);
+  }
+
+  if (filters?.course) {
+    const c = filters.course.toLowerCase().trim();
+    items = items.filter((item) => (item.course?.toLowerCase() || '') === c);
+  }
+
+  if (filters?.year_level) {
+    const y = filters.year_level.toLowerCase().trim();
+    items = items.filter((item: any) => (item.year_level?.toLowerCase() || '') === y);
+  }
+
+  if (filters?.sortBy === 'name') {
+    items.sort((a, b) => (a.fullName || a.username || '').localeCompare(b.fullName || b.username || ''));
+  }
+
+  return items.slice(offset, offset + limit);
 }
 
-export async function listFollowing(userId: string, limit: number, offset: number): Promise<FollowListItem[]> {
+export async function listFollowing(
+  userId: string,
+  limit: number,
+  offset: number,
+  filters?: { search?: string; department?: string; course?: string; year_level?: string; sortBy?: 'recent' | 'name' }
+): Promise<FollowListItem[]> {
   const { data, error } = await supabaseAdmin
     .from('follows')
     .select(`created_at, followed:profiles!follows_followed_id_fkey(${FOLLOW_PROFILE_COLUMNS})`)
     .eq('follower_id', userId)
-    .order('created_at', { ascending: false })
-    .range(offset, offset + limit - 1);
+    .order('created_at', { ascending: false });
+
   if (error) throw error;
-  return (data ?? [])
+
+  let items = (data ?? [])
     .filter((row: any) => row.followed)
     .map((row: any) => mapListItem(row.followed, row.created_at));
+
+  if (filters?.search) {
+    const s = filters.search.toLowerCase().trim();
+    items = items.filter((item) =>
+      (item.fullName?.toLowerCase() || '').includes(s) ||
+      (item.username?.toLowerCase() || '').includes(s)
+    );
+  }
+
+  if (filters?.department) {
+    const d = filters.department.toLowerCase().trim();
+    items = items.filter((item: any) => (item.department?.toLowerCase() || '') === d);
+  }
+
+  if (filters?.course) {
+    const c = filters.course.toLowerCase().trim();
+    items = items.filter((item) => (item.course?.toLowerCase() || '') === c);
+  }
+
+  if (filters?.year_level) {
+    const y = filters.year_level.toLowerCase().trim();
+    items = items.filter((item: any) => (item.year_level?.toLowerCase() || '') === y);
+  }
+
+  if (filters?.sortBy === 'name') {
+    items.sort((a, b) => (a.fullName || a.username || '').localeCompare(b.fullName || b.username || ''));
+  }
+
+  return items.slice(offset, offset + limit);
 }
 
 /** Raw id sets — used for mutual-followers/following computation, where

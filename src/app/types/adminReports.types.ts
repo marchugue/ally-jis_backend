@@ -2,6 +2,27 @@
 
 export type ReportStatus = 'pending' | 'reviewing' | 'resolved' | 'rejected';
 
+export interface AdminReportPostMedia {
+  id: string;
+  url: string;
+  position: number;
+}
+
+export interface AdminReportPost {
+  id: string;
+  author_id: string;
+  author_username?: string | null;
+  author_name?: string | null;
+  author_avatar?: string | null;
+  content: string;
+  audience?: string;
+  likes_count?: number;
+  comments_count?: number;
+  created_at: string;
+  media?: AdminReportPostMedia[];
+  is_deleted?: boolean;
+}
+
 export interface AdminReportListItem {
   id: string;
   reporter_id: string | null;
@@ -13,6 +34,8 @@ export interface AdminReportListItem {
   category_id: string;
   category_label: string;
   conversation_id: string | null;
+  post_id?: string | null;
+  post?: AdminReportPost | null;
   status: ReportStatus;
   internal_notes: string | null;
   created_at: string;
@@ -24,6 +47,7 @@ export interface ListReportsParams {
   categoryId?: string;
   cursor?: string | null;
   limit?: number;
+  targetType?: 'all' | 'post' | 'user';
 }
 
 export interface PaginatedReportList {

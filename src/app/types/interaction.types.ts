@@ -39,6 +39,18 @@ export interface PaginatedAllyList {
   nextCursor: string | null;
 }
 
+export type AllySortBy = 'recent' | 'name';
+
+export interface AllyFilterOptions {
+  search?: string;
+  department?: string;
+  course?: string;
+  year_level?: string;
+  sortBy?: AllySortBy;
+  limit?: number;
+  cursor?: string | null;
+}
+
 export interface IncomingInteractionsPayload {
   requesterIds: string[];
 }

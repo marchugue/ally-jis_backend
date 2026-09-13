@@ -1,6 +1,7 @@
 import * as profileModel from '../models/profile.model';
 import { HttpError } from '../types/auth.types';
-import type { ProfileRow, UpdateProfilePayload, UsernameAvailability } from '../types/profile.types';
+import * as followModel from '../models/follow.model';
+import type { DiscoverProfileItem, ProfileFilterOptions, ProfileRow, UpdateProfilePayload, UsernameAvailability } from '../types/profile.types';
 
 /**
  * GET /profiles/me, GET /profiles/:userId
@@ -14,10 +15,91 @@ export async function getProfile(id: string): Promise<ProfileRow> {
 }
 
 /**
- * GET /profiles?exclude={userId}
+ * GET /profiles?exclude={userId}&department=...&search=...&sortBy=match|popular|recent|name
  */
-export async function listProfiles(excludeId?: string | null): Promise<ProfileRow[]> {
-  return profileModel.findAllExcluding(excludeId);
+export async function listProfiles(
+  filters: ProfileFilterOptions | string | null = {}
+): Promise<DiscoverProfileItem[]> {
+  const options: ProfileFilterOptions =
+    typeof filters === 'string'
+      ? { excludeId: filters }
+      : (filters || {});
+
+  const {
+    excludeId,
+    viewerId,
+    search,
+    department,
+    course,
+    year_level,
+    interest,
+    sortBy = 'recent',
+    limit = 50,
+    offset = 0,
+  } = options;
+
+  const rawProfiles = await profileModel.findFilteredProfiles({
+    excludeId,
+    search,
+    department,
+    course,
+    year_level,
+    interest,
+  });
+
+  // If viewerId is provided or match / popularity sorting requested, enrich profiles
+  let viewerProfile: ProfileRow | null = null;
+  if (viewerId) {
+    viewerProfile = await profileModel.findById(viewerId).catch(() => null);
+  }
+
+  const viewerInterests = new Set(
+    (viewerProfile?.interests || []).map((i) => i.toLowerCase().trim())
+  );
+  const totalViewerInterests = Math.max(1, viewerInterests.size);
+
+  const enriched: DiscoverProfileItem[] = rawProfiles.map((p) => {
+    let sharedInterestsCount = 0;
+    if (Array.isArray(p.interests)) {
+      for (const userInt of p.interests) {
+        if (viewerInterests.has(userInt.toLowerCase().trim())) {
+          sharedInterestsCount++;
+        }
+      }
+    }
+
+    const matchPercentage = Math.min(
+      100,
+      Math.round(
+        (sharedInterestsCount / totalViewerInterests) * 70 +
+          (viewerProfile?.department && p.department === viewerProfile.department ? 20 : 0) +
+          (viewerProfile?.course && p.course === viewerProfile.course ? 10 : 0)
+      )
+    );
+
+    return {
+      ...p,
+      sharedInterestsCount,
+      matchPercentage,
+    };
+  });
+
+  if (sortBy === 'match') {
+    enriched.sort((a, b) => (b.matchPercentage || 0) - (a.matchPercentage || 0));
+  } else if (sortBy === 'popular') {
+    const withFollowers = await Promise.all(
+      enriched.map(async (item) => {
+        const { followersCount } = await followModel.getCounts(item.id).catch(() => ({ followersCount: 0 }));
+        return { ...item, followersCount };
+      })
+    );
+    withFollowers.sort((a, b) => (b.followersCount || 0) - (a.followersCount || 0));
+    return withFollowers.slice(offset, offset + limit);
+  } else if (sortBy === 'name') {
+    enriched.sort((a, b) => (a.full_name || a.username || '').localeCompare(b.full_name || b.username || ''));
+  }
+
+  return enriched.slice(offset, offset + limit);
 }
 
 /**

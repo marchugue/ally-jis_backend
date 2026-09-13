@@ -3,6 +3,7 @@ import * as matchmakingService from './matchmaking.service';
 import { HttpError } from '../types/auth.types';
 import type {
   AcceptConnectionResponse,
+  AllyFilterOptions,
   ConnectionStatusResponse,
   InteractionRow,
   PaginatedAllyList,
@@ -49,6 +50,7 @@ export async function requestConnection(userId: string, targetUserId: string): P
     title: 'New Connection Request',
     description: 'Someone wants to connect with you! Check your requests to accept.',
     fromUserId: userId,
+    targetId: userId,
   });
 }
 
@@ -95,6 +97,7 @@ export async function acceptConnection(
     title: 'Request Accepted!',
     description: 'Your connection request was accepted. You can now message each other.',
     fromUserId: currentUserId,
+    targetId: conversationId,
   });
 
   return { conversationId };
@@ -171,9 +174,14 @@ const DEFAULT_ALLY_PAGE_SIZE = 20;
 /**
  * GET /interactions/allies/:userId
  */
-export async function listAllies(userId: string, cursor: string | null, limit = DEFAULT_ALLY_PAGE_SIZE): Promise<PaginatedAllyList> {
+export async function listAllies(
+  userId: string,
+  cursor: string | null,
+  limit = DEFAULT_ALLY_PAGE_SIZE,
+  filters?: AllyFilterOptions
+): Promise<PaginatedAllyList> {
   const offset = cursor ? Number(cursor) || 0 : 0;
-  const items = await interactionModel.listAllies(userId, limit + 1, offset);
+  const items = await interactionModel.listAllies(userId, limit + 1, offset, filters);
   const hasMore = items.length > limit;
   return { items: items.slice(0, limit), nextCursor: hasMore ? String(offset + limit) : null };
 }

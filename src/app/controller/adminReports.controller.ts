@@ -10,6 +10,7 @@ export const listReports = asyncHandler(async (req: Request, res: Response) => {
   const params: ListReportsParams = {
     status: (req.query.status as ListReportsParams['status']) ?? 'all',
     categoryId: typeof req.query.categoryId === 'string' ? req.query.categoryId : undefined,
+    targetType: (req.query.targetType as ListReportsParams['targetType']) ?? 'all',
     cursor: typeof req.query.cursor === 'string' ? req.query.cursor : null,
     limit: req.query.limit ? Number(req.query.limit) : undefined,
   };
@@ -62,3 +63,11 @@ export const suspendReportedUser = asyncHandler(async (req: Request, res: Respon
   await adminReportsService.suspendReportedUser(req.userId as string, String(req.params.reportId), until ?? null, req.ip);
   res.status(204).send();
 });
+
+// DELETE /admin/reports/:reportId/post  { postId? }
+export const deleteReportedPost = asyncHandler(async (req: Request, res: Response) => {
+  const postId = req.body?.postId ? String(req.body.postId) : undefined;
+  await adminReportsService.deleteReportedPost(req.userId as string, String(req.params.reportId), postId, req.ip);
+  res.status(200).json({ success: true });
+});
+

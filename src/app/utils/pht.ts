@@ -35,3 +35,16 @@ export function phtMidnightUtc(dateStr: string): string {
   // dateStr is already PHT local; PHT midnight = UTC (dateStr - 8h)
   return new Date(`${dateStr}T00:00:00.000+08:00`).toISOString();
 }
+
+/**
+ * Returns the current hours (0-23) and minutes (0-59) in Philippine Standard Time.
+ */
+export function getPhtHoursAndMinutes(now: Date = new Date()): { hours: number; minutes: number; dateStr: string } {
+  const pht = new Date(now.getTime() + PHT_OFFSET_MS);
+  return {
+    hours: pht.getUTCHours(),
+    minutes: pht.getUTCMinutes(),
+    dateStr: pht.toISOString().slice(0, 10),
+  };
+}
+
