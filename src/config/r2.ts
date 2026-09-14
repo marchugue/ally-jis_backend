@@ -34,24 +34,29 @@ export async function uploadToR2Storage(input: {
     return null;
   }
 
-  const command = new PutObjectCommand({
-    Bucket: env.R2_BUCKET_NAME,
-    Key: input.path,
-    Body: input.buffer,
-    ContentType: input.contentType,
-  });
+  try {
+    const command = new PutObjectCommand({
+      Bucket: env.R2_BUCKET_NAME,
+      Key: input.path,
+      Body: input.buffer,
+      ContentType: input.contentType,
+    });
 
-  await r2Client.send(command);
+    await r2Client.send(command);
 
-  if (env.R2_PUBLIC_DOMAIN) {
-    const domain = env.R2_PUBLIC_DOMAIN.endsWith('/')
-      ? env.R2_PUBLIC_DOMAIN.slice(0, -1)
-      : env.R2_PUBLIC_DOMAIN;
-    return `${domain}/${input.path}`;
+    if (env.R2_PUBLIC_DOMAIN) {
+      const domain = env.R2_PUBLIC_DOMAIN.endsWith('/')
+        ? env.R2_PUBLIC_DOMAIN.slice(0, -1)
+        : env.R2_PUBLIC_DOMAIN;
+      return `${domain}/${input.path}`;
+    }
+
+    const endpoint = env.R2_ENDPOINT || `https://${env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`;
+    return `${endpoint}/${env.R2_BUCKET_NAME}/${input.path}`;
+  } catch (err) {
+    console.error('[R2] Failed to upload object:', input.path, err);
+    return null;
   }
-
-  const endpoint = env.R2_ENDPOINT || `https://${env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`;
-  return `${endpoint}/${env.R2_BUCKET_NAME}/${input.path}`;
 }
 
 /**

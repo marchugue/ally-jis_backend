@@ -7,6 +7,7 @@
 // single source of timezone truth.
 
 import { supabaseAdmin } from '../../config/supabase';
+import { phtDateStr } from '../utils/pht';
 
 /** 1 message from each participant per PHT day makes that day valid.
  * A single exchange ("hi" / "hey") is enough — showing up is what counts. */
@@ -99,24 +100,33 @@ export async function getStreak(conversationId: string): Promise<ConversationStr
   return (data as ConversationStreakRow | null) ?? null;
 }
 
+export interface ConversationStreakResult {
+  dayStreak: number;
+  streakActiveToday: boolean;
+}
+
 /**
  * Bulk-fetch streaks for a list of conversation ids.
- * Returns a Map<conversationId, day_streak>.
+ * Returns a Map<conversationId, { dayStreak, streakActiveToday }>.
  */
 export async function getStreaksForConversations(
   conversationIds: string[],
-): Promise<Map<string, number>> {
+): Promise<Map<string, ConversationStreakResult>> {
   if (conversationIds.length === 0) return new Map();
 
   const { data, error } = await supabaseAdmin
     .from('conversation_streaks')
-    .select('conversation_id, day_streak')
+    .select('conversation_id, day_streak, streak_last_active_pht')
     .in('conversation_id', conversationIds);
   if (error) throw error;
 
-  const map = new Map<string, number>();
+  const today = phtDateStr();
+  const map = new Map<string, ConversationStreakResult>();
   for (const row of data ?? []) {
-    map.set(row.conversation_id as string, row.day_streak as number);
+    map.set(row.conversation_id as string, {
+      dayStreak: (row.day_streak as number) ?? 0,
+      streakActiveToday: (row.streak_last_active_pht as string | null) === today,
+    });
   }
   return map;
 }

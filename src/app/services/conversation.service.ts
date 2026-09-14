@@ -119,11 +119,15 @@ export async function listMyConversations(userId: string): Promise<ConversationR
   const withBlockStatus = attachBlockStatus(conversations, userId, directions);
   const withIcebreakers = attachIcebreakersEnabled(withBlockStatus, userId);
   const withVariant = await attachVariant(withIcebreakers, userId);
-  // Attach general day streak (works for all conversation types).
-  return withVariant.map((conv) => ({
-    ...conv,
-    dayStreak: streakMap.get(conv.id) ?? 0,
-  }));
+  // Attach general day streak and active-today status (works for all conversation types).
+  return withVariant.map((conv) => {
+    const streak = streakMap.get(conv.id);
+    return {
+      ...conv,
+      dayStreak: streak?.dayStreak ?? 0,
+      streakActiveToday: streak?.streakActiveToday ?? false,
+    };
+  });
 }
 
 /**
@@ -145,7 +149,12 @@ export async function getConversationById(conversationId: string, userId: string
   const [withIcebreakers] = attachIcebreakersEnabled([tagged], userId);
   const [withVariant] = await attachVariant([withIcebreakers], userId);
   const streakMap = await streakModel.getStreaksForConversations([conversationId]);
-  return { ...withVariant, dayStreak: streakMap.get(conversationId) ?? 0 };
+  const streak = streakMap.get(conversationId);
+  return {
+    ...withVariant,
+    dayStreak: streak?.dayStreak ?? 0,
+    streakActiveToday: streak?.streakActiveToday ?? false,
+  };
 }
 
 /**

@@ -9,7 +9,13 @@ import { HttpError } from '../types/auth.types';
 import type { PresetAvatarRow } from '../types/presetAvatar.types';
 
 const MAX_FILE_BYTES = 10 * 1024 * 1024; // 10 MB
-const ALLOWED_CONTENT_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
+const ALLOWED_CONTENT_TYPES = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif']);
+
+function normalizeContentType(contentType: string): string {
+  const clean = contentType.toLowerCase().split(';')[0].trim();
+  if (clean === 'image/jpg') return 'image/jpeg';
+  return clean;
+}
 
 /**
  * Returns all admin-curated preset avatar images.
@@ -27,7 +33,8 @@ export async function createPresetAvatar(input: {
   contentType: string;
   label?: string | null;
 }): Promise<PresetAvatarRow> {
-  const { buffer, originalFilename, contentType, label } = input;
+  const { buffer, originalFilename, label } = input;
+  const contentType = normalizeContentType(input.contentType);
 
   if (buffer.length === 0) {
     throw new HttpError('Uploaded file is empty', 400);
@@ -35,7 +42,7 @@ export async function createPresetAvatar(input: {
   if (buffer.length > MAX_FILE_BYTES) {
     throw new HttpError('File exceeds the 10 MB upload limit', 400);
   }
-  if (!ALLOWED_CONTENT_TYPES.has(contentType)) {
+  if (!ALLOWED_CONTENT_TYPES.has(contentType) && !ALLOWED_CONTENT_TYPES.has(input.contentType)) {
     throw new HttpError('Unsupported file type. Use JPEG, PNG, WebP or GIF.', 400);
   }
 
@@ -83,7 +90,8 @@ export async function uploadUserAvatar(input: {
   originalFilename: string;
   contentType: string;
 }): Promise<string> {
-  const { userId, buffer, originalFilename, contentType } = input;
+  const { userId, buffer, originalFilename } = input;
+  const contentType = normalizeContentType(input.contentType);
 
   if (buffer.length === 0) {
     throw new HttpError('Uploaded file is empty', 400);
@@ -91,7 +99,7 @@ export async function uploadUserAvatar(input: {
   if (buffer.length > MAX_FILE_BYTES) {
     throw new HttpError('File exceeds the 10 MB upload limit', 400);
   }
-  if (!ALLOWED_CONTENT_TYPES.has(contentType)) {
+  if (!ALLOWED_CONTENT_TYPES.has(contentType) && !ALLOWED_CONTENT_TYPES.has(input.contentType)) {
     throw new HttpError('Unsupported file type. Use JPEG, PNG, WebP or GIF.', 400);
   }
 

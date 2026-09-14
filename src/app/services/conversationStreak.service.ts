@@ -116,7 +116,11 @@ export async function recomputeConversationStreak(
     await model.upsertStreak(conversationId, dayStreak, streakLastActivePht);
 
     // Broadcast the updated streak to all members.
-    const payload = { conversationId, dayStreak };
+    const payload = {
+      conversationId,
+      dayStreak,
+      streakActiveToday: streakLastActivePht === today,
+    };
     for (const memberId of allMemberIds) {
       emitToUser(memberId, 'conversation:streak_updated', payload);
     }

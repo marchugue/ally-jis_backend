@@ -57,6 +57,7 @@ export interface ConversationRow {
   matchInfo?: ConversationMatchInfo | null;
   /** PHT-based consecutive-day streak for this conversation (all types). */
   dayStreak?: number;
+  streakActiveToday?: boolean;
 }
 
 export type ConversationVariant = 'regular' | 'anonymous' | 'anonymous_ended';
@@ -65,6 +66,7 @@ export interface ConversationMatchInfo {
   matchId: string;
   stage: number;
   dayStreak: number;
+  streakActiveToday?: boolean;
   myAlias: string | null;
   myAvatar: string | null;
   partnerAlias: string | null;
