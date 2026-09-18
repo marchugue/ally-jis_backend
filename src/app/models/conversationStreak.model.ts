@@ -7,12 +7,15 @@
 // single source of timezone truth.
 
 import { supabaseAdmin } from '../../config/supabase';
-import { phtDateStr } from '../utils/pht';
+import { phtDateStr, phtDateStrOffset } from '../utils/pht';
 
 /** 1 message from each participant per PHT day makes that day valid.
  * A single exchange ("hi" / "hey") is enough — showing up is what counts. */
 export const MIN_MESSAGES_PER_VALID_DAY = 1;
 export const MIN_PARTICIPANTS_PER_VALID_DAY = 2; // both sides must have sent messages
+
+/** Maximum restore tokens a user can hold. */
+export const MAX_STREAK_RESTORES = 5;
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -106,6 +109,41 @@ export interface ConversationStreakResult {
 }
 
 /**
+ * Computes the effective day streak and whether today is activated.
+ *
+ * FIXED: removed the previous `streakLastActivePht === yesterday → +1` inflation.
+ * The stored `day_streak` is the authoritative count. Showing +1 before today
+ * is actually activated was misleading and could diverge from a fresh recompute.
+ *
+ * - If last active today: streak is storedStreak, active today ✅
+ * - If last active yesterday: streak is storedStreak, NOT yet activated today (pending) 🟡
+ * - If last active before yesterday (or none): streak has expired → 0 ❌
+ */
+export function computeEffectiveStreak(
+  storedStreak: number,
+  streakLastActivePht: string | null,
+): ConversationStreakResult {
+  if (!streakLastActivePht || storedStreak <= 0) {
+    return { dayStreak: 0, streakActiveToday: false };
+  }
+
+  const today = phtDateStr();
+  const yesterday = phtDateStrOffset(-1);
+
+  if (streakLastActivePht === today) {
+    // Both participants chatted today — streak is live and active.
+    return { dayStreak: storedStreak, streakActiveToday: true };
+  } else if (streakLastActivePht === yesterday) {
+    // Yesterday was the last active day; today hasn't been activated yet.
+    // Show the existing streak count (do NOT add +1 — it hasn't been earned yet).
+    return { dayStreak: storedStreak, streakActiveToday: false };
+  } else {
+    // Missed a day — streak has lapsed.
+    return { dayStreak: 0, streakActiveToday: false };
+  }
+}
+
+/**
  * Bulk-fetch streaks for a list of conversation ids.
  * Returns a Map<conversationId, { dayStreak, streakActiveToday }>.
  */
@@ -120,13 +158,94 @@ export async function getStreaksForConversations(
     .in('conversation_id', conversationIds);
   if (error) throw error;
 
-  const today = phtDateStr();
   const map = new Map<string, ConversationStreakResult>();
   for (const row of data ?? []) {
-    map.set(row.conversation_id as string, {
-      dayStreak: (row.day_streak as number) ?? 0,
-      streakActiveToday: (row.streak_last_active_pht as string | null) === today,
-    });
+    map.set(
+      row.conversation_id as string,
+      computeEffectiveStreak(
+        (row.day_streak as number) ?? 0,
+        row.streak_last_active_pht as string | null,
+      ),
+    );
   }
   return map;
+}
+
+// ─── Restore ─────────────────────────────────────────────────────────────────
+
+/**
+ * Returns the number of remaining streak restore tokens for a user.
+ */
+export async function getUserRestoreTokens(userId: string): Promise<number> {
+  const { data, error } = await supabaseAdmin
+    .from('profiles')
+    .select('streak_restores')
+    .eq('id', userId)
+    .single();
+  if (error) throw error;
+  return (data?.streak_restores as number) ?? 0;
+}
+
+/**
+ * Restores a lapsed streak for a conversation.
+ * - Validates the user has at least 1 restore token.
+ * - Decrements `profiles.streak_restores` by 1.
+ * - Sets `conversation_streaks.streak_last_active_pht` to today PHT
+ *   so the streak is immediately considered active today.
+ * - Logs the restore to `conversation_streak_restores`.
+ *
+ * Returns the remaining token count after the operation.
+ * Throws if the user has no tokens remaining.
+ */
+export async function restoreStreak(
+  conversationId: string,
+  userId: string,
+  previousStreak: number,
+): Promise<{ restoresRemaining: number; newStreak: number }> {
+  // 1. Check token balance
+  const remaining = await getUserRestoreTokens(userId);
+  if (remaining <= 0) {
+    throw new Error('No streak restore tokens remaining');
+  }
+
+  // 2. Determine the restored streak value:
+  //    If previousStreak > 0, keep it. If 0, restore to 1 (day 1 restart).
+  const newStreak = previousStreak > 0 ? previousStreak : 1;
+  const today = phtDateStr();
+
+  // 3. Decrement token (atomic update with check)
+  const { error: tokenErr } = await supabaseAdmin
+    .from('profiles')
+    .update({ streak_restores: remaining - 1 })
+    .eq('id', userId)
+    .eq('streak_restores', remaining); // optimistic lock
+  if (tokenErr) throw tokenErr;
+
+  // 4. Write the restored streak as active today
+  const { error: streakErr } = await supabaseAdmin
+    .from('conversation_streaks')
+    .upsert(
+      {
+        conversation_id: conversationId,
+        day_streak: newStreak,
+        streak_last_active_pht: today,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'conversation_id' },
+    );
+  if (streakErr) throw streakErr;
+
+  // 5. Audit log
+  await supabaseAdmin
+    .from('conversation_streak_restores')
+    .insert({
+      conversation_id: conversationId,
+      restored_by: userId,
+      previous_streak: previousStreak,
+    })
+    .then(({ error }) => {
+      if (error) console.warn('[StreakRestore] Failed to insert audit row:', error);
+    });
+
+  return { restoresRemaining: remaining - 1, newStreak };
 }

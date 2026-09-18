@@ -74,7 +74,7 @@ export async function sendOtpEmail({ to, otpCode, expiresInMinutes }: SendOtpEma
               <div style="border-top:1px solid #F3F4F6;padding-top:20px;">
                 <p style="margin:0;font-size:12px;color:#D1D5DB;text-align:center;">
                   &copy; ${new Date().getFullYear()} Ally-jis &bull; CHMSU Alijis Campus &bull;
-                  <a href="https://ally-jis.xyz" style="color:#1A6B3C;text-decoration:none;">ally-jis.xyz</a>
+                  <a href="https://ally-jis.com" style="color:#1A6B3C;text-decoration:none;">ally-jis.com</a>
                 </p>
               </div>
             </td>

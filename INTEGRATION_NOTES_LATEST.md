@@ -1,13 +1,13 @@
 # This Delivery: Domain Redirect, General Settings, User & Reports Management
 
-## 1. Domain (admin.ally-jis.xyz)
+## 1. Domain (admin.ally-jis.com)
 
 Two-part process, and I can only help with the second:
 
 1. **DNS (at your registrar):** add a CNAME record — Host: `admin`, Value: whatever your hosting
    platform gives you for custom domains (e.g. `cname.vercel-dns.com` for Vercel). I don't know
    your host, so this step is on you.
-2. **Hosting platform:** add `admin.ally-jis.xyz` as a custom domain in your project settings
+2. **Hosting platform:** add `admin.ally-jis.com` as a custom domain in your project settings
    (Vercel: Project → Settings → Domains; Netlify: Site → Domain management; Railway: Service →
    Settings → Networking).
 3. **What I did add:** pointing DNS at the same deployment doesn't automatically land visitors on

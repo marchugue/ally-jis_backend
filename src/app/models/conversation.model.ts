@@ -241,10 +241,22 @@ async function attachMessageMetadata(messages: MessageRow[]): Promise<MessageRow
   return attachReactions(withReplies);
 }
 
+export interface FindMessagesOptions {
+  limit?: number;
+  before?: string;
+}
+
+export interface PaginatedMessagesResult {
+  messages: MessageRow[];
+  hasMore: boolean;
+  nextCursor: string | null;
+}
+
 export async function findMessagesByConversation(
   conversationId: string,
   userId: string,
-): Promise<MessageRow[]> {
+  options?: FindMessagesOptions,
+): Promise<PaginatedMessagesResult> {
   // 1. Fetch the caller's cleared_at so we can filter pre-clear messages.
   const { data: memberData } = await supabaseAdmin
     .from('conversation_members')
@@ -255,25 +267,48 @@ export async function findMessagesByConversation(
 
   const clearedAt: string | null = memberData?.cleared_at ?? null;
 
-  // 2. Fetch messages, applying the cleared_at lower-bound if present.
+  // 2. Fetch messages, applying the cleared_at and before bounds if present.
   let query = supabaseAdmin
     .from('messages')
     .select('id, conversation_id, sender_id, content, image_url, created_at, reply_to_message_id, is_deleted, deleted_at')
-    .eq('conversation_id', conversationId)
-    .order('created_at', { ascending: true });
+    .eq('conversation_id', conversationId);
 
   if (clearedAt) {
     query = query.gt('created_at', clearedAt);
   }
 
+  if (options?.before) {
+    query = query.lt('created_at', options.before);
+  }
+
+  const isPaginated = options?.limit !== undefined || options?.before !== undefined;
+  const limit = options?.limit ?? 30;
+
+  if (isPaginated) {
+    // When paginating, order DESC and fetch limit + 1 to detect hasMore
+    query = query.order('created_at', { ascending: false }).limit(limit + 1);
+  } else {
+    query = query.order('created_at', { ascending: true });
+  }
+
   const { data, error } = await query;
   if (error) throw error;
 
-  let messages = (data as MessageRow[]) ?? [];
+  let rows = (data as MessageRow[]) ?? [];
+  let hasMore = false;
+
+  if (isPaginated) {
+    if (rows.length > limit) {
+      hasMore = true;
+      rows = rows.slice(0, limit);
+    }
+    // Reverse back to chronological order (oldest to newest)
+    rows.reverse();
+  }
 
   // 3. Filter out messages this user has individually deleted-for-themselves.
-  if (messages.length > 0) {
-    const messageIds = messages.map((m) => m.id);
+  if (rows.length > 0) {
+    const messageIds = rows.map((m) => m.id);
     const { data: deletedRows } = await supabaseAdmin
       .from('deleted_messages_user')
       .select('message_id')
@@ -282,11 +317,14 @@ export async function findMessagesByConversation(
 
     if (deletedRows && deletedRows.length > 0) {
       const deletedSet = new Set(deletedRows.map((r: { message_id: string }) => r.message_id));
-      messages = messages.filter((m) => !deletedSet.has(m.id));
+      rows = rows.filter((m) => !deletedSet.has(m.id));
     }
   }
 
-  return attachMessageMetadata(messages);
+  const messages = await attachMessageMetadata(rows);
+  const nextCursor = hasMore && messages.length > 0 ? messages[0].created_at : null;
+
+  return { messages, hasMore, nextCursor };
 }
 
 export async function findMessageById(messageId: string): Promise<MessageRow | null> {

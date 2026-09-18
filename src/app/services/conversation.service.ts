@@ -5,6 +5,7 @@ import * as matchModel from '../models/matchmaking.model';
 import * as matchmakingService from './matchmaking.service';
 import * as streakService from './conversationStreak.service';
 import * as streakModel from '../models/conversationStreak.model';
+import { supabaseAdmin } from '../../config/supabase';
 import { emitToUser } from './realtime.service';
 import { HttpError } from '../types/auth.types';
 import type {
@@ -122,10 +123,19 @@ export async function listMyConversations(userId: string): Promise<ConversationR
   // Attach general day streak and active-today status (works for all conversation types).
   return withVariant.map((conv) => {
     const streak = streakMap.get(conv.id);
+    const dayStreak = streak?.dayStreak ?? 0;
+    const streakActiveToday = streak?.streakActiveToday ?? false;
     return {
       ...conv,
-      dayStreak: streak?.dayStreak ?? 0,
-      streakActiveToday: streak?.streakActiveToday ?? false,
+      dayStreak,
+      streakActiveToday,
+      matchInfo: conv.matchInfo
+        ? {
+            ...conv.matchInfo,
+            dayStreak,
+            streakActiveToday,
+          }
+        : null,
     };
   });
 }
@@ -150,10 +160,19 @@ export async function getConversationById(conversationId: string, userId: string
   const [withVariant] = await attachVariant([withIcebreakers], userId);
   const streakMap = await streakModel.getStreaksForConversations([conversationId]);
   const streak = streakMap.get(conversationId);
+  const dayStreak = streak?.dayStreak ?? 0;
+  const streakActiveToday = streak?.streakActiveToday ?? false;
   return {
     ...withVariant,
-    dayStreak: streak?.dayStreak ?? 0,
-    streakActiveToday: streak?.streakActiveToday ?? false,
+    dayStreak,
+    streakActiveToday,
+    matchInfo: withVariant.matchInfo
+      ? {
+          ...withVariant.matchInfo,
+          dayStreak,
+          streakActiveToday,
+        }
+      : null,
   };
 }
 
@@ -299,14 +318,18 @@ export async function listMyMemberships(userId: string): Promise<ConversationMem
 /**
  * GET /conversations/:id/messages
  */
-export async function listMessages(conversationId: string, userId: string): Promise<MessageRow[]> {
+export async function listMessages(
+  conversationId: string,
+  userId: string,
+  options?: conversationModel.FindMessagesOptions,
+): Promise<conversationModel.PaginatedMessagesResult> {
   const member = await conversationModel.isMember(conversationId, userId);
   if (!member) {
     throw new HttpError('You are not a member of this conversation', 403);
   }
 
   // Pass userId so the model can apply cleared_at + deleted_messages_user scoping.
-  return conversationModel.findMessagesByConversation(conversationId, userId);
+  return conversationModel.findMessagesByConversation(conversationId, userId, options);
 }
 
 /**
@@ -588,4 +611,37 @@ export async function deleteMessageForEveryone(
   }
 
   await conversationModel.tombstoneMessage(messageId);
+}
+
+/**
+ * POST /conversations/:id/streak/restore
+ *
+ * Restores a lapsed streak using one of the caller's restore tokens.
+ * - Validates the caller is a member.
+ * - Reads the current stored streak value.
+ * - Delegates to streakService which decrements token, writes DB, and broadcasts.
+ * Returns { restoresRemaining, newStreak }.
+ */
+export async function restoreStreakForConversation(
+  conversationId: string,
+  userId: string,
+): Promise<{ restoresRemaining: number; newStreak: number }> {
+  const member = await conversationModel.isMember(conversationId, userId);
+  if (!member) {
+    throw new HttpError('You are not a member of this conversation', 403);
+  }
+
+  // Fetch all member IDs for the broadcast
+  const { data: memberRows, error: memErr } = await supabaseAdmin
+    .from('conversation_members')
+    .select('user_id')
+    .eq('conversation_id', conversationId);
+  if (memErr) throw memErr;
+  const allMemberIds = (memberRows ?? []).map((m: { user_id: string }) => m.user_id);
+
+  // Get the current stored streak (may be 0 if lapsed)
+  const currentRow = await streakModel.getStreak(conversationId);
+  const currentStreak = currentRow?.day_streak ?? 0;
+
+  return streakService.restoreConversationStreak(conversationId, userId, allMemberIds, currentStreak);
 }

@@ -14,7 +14,7 @@ import type { Request, Response, NextFunction } from 'express';
 import * as notificationController from '../app/controller/notification.controller';
 import { authMiddleware } from '../app/middleware/auth.middleware';
 
-import { checkAndSendStreakReminders } from '../app/services/streakReminder.service';
+import { checkAndSendStreakReminders, expireUnactivatedStreaks } from '../app/services/streakReminder.service';
 
 const router = Router();
 
@@ -42,6 +42,18 @@ router.post('/test-streak-reminders', internalKeyMiddleware, async (_req, res) =
 // POST /api/notifications/test-streak-reminders — auth-guarded fallback
 router.post('/test-streak-reminders', authMiddleware, async (_req, res) => {
   const result = await checkAndSendStreakReminders();
+  res.status(200).json(result);
+});
+
+// POST /api/notifications/test-streak-expiration
+router.post('/test-streak-expiration', internalKeyMiddleware, async (_req, res) => {
+  const result = await expireUnactivatedStreaks();
+  res.status(200).json(result);
+});
+
+// POST /api/notifications/test-streak-expiration — auth-guarded fallback
+router.post('/test-streak-expiration', authMiddleware, async (_req, res) => {
+  const result = await expireUnactivatedStreaks();
   res.status(200).json(result);
 });
 

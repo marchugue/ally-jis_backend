@@ -7,7 +7,7 @@ dotenv.config();
 import { supabaseAdmin } from '../config/supabase';
 
 async function seedAdmin() {
-  const adminEmail = 'admin@ally-jis.xyz';
+  const adminEmail = process.env.ADMIN_EMAIL || 'admin@ally-jis.com';
   const adminPassword = '@adminallyjis';
   const adminUsername = 'admin';
 

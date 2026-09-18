@@ -63,4 +63,8 @@ router.patch('/:id/icebreakers', conversationController.updateIcebreakersEnabled
 // GET /api/conversations/:id/icebreakers
 router.get('/:id/icebreakers', conversationController.getIcebreakersEnabled);
 
+// POST /api/conversations/:id/streak/restore — use a restore token
+router.post('/:id/streak/restore', conversationController.restoreStreak);
+
 export default router;
+

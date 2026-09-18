@@ -111,15 +111,19 @@ export async function recomputeConversationStreak(
     ? (validDates.has(today) ? today : phtDateStrOffset(-1))
     : null;
 
+  const streakActiveToday = streakLastActivePht === today;
+
   const prevStreak = current?.day_streak ?? 0;
-  if (dayStreak !== prevStreak || streakLastActivePht !== (current?.streak_last_active_pht ?? null)) {
+  const prevLastActive = current?.streak_last_active_pht ?? null;
+
+  if (dayStreak !== prevStreak || streakLastActivePht !== prevLastActive) {
     await model.upsertStreak(conversationId, dayStreak, streakLastActivePht);
 
-    // Broadcast the updated streak to all members.
+    // Broadcast the updated streak directly — no computeEffectiveStreak middleman.
     const payload = {
       conversationId,
       dayStreak,
-      streakActiveToday: streakLastActivePht === today,
+      streakActiveToday,
     };
     for (const memberId of allMemberIds) {
       emitToUser(memberId, 'conversation:streak_updated', payload);
@@ -127,4 +131,39 @@ export async function recomputeConversationStreak(
   }
 
   return { dayStreak };
+}
+
+/**
+ * Restores a lapsed streak for a conversation using one of the caller's
+ * restore tokens. Broadcasts the restored streak to all members.
+ *
+ * Throws if the user has no restore tokens remaining.
+ */
+export async function restoreConversationStreak(
+  conversationId: string,
+  userId: string,
+  allMemberIds: string[],
+  currentStoredStreak: number,
+): Promise<{ restoresRemaining: number; newStreak: number }> {
+  const result = await model.restoreStreak(conversationId, userId, currentStoredStreak);
+
+  // Broadcast the restored streak to all members
+  const payload = {
+    conversationId,
+    dayStreak: result.newStreak,
+    streakActiveToday: true,
+    status: 'restored',
+  };
+  for (const memberId of allMemberIds) {
+    emitToUser(memberId, 'conversation:streak_updated', payload);
+  }
+
+  return result;
+}
+
+/**
+ * Returns the number of remaining restore tokens for a user.
+ */
+export async function getRestoreTokens(userId: string): Promise<number> {
+  return model.getUserRestoreTokens(userId);
 }

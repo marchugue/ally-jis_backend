@@ -32,7 +32,7 @@ export const env = {
   // Get your API key from resend.com/api-keys
   // Leave blank to fall back to console-log stub in development.
   RESEND_API_KEY: process.env.RESEND_API_KEY ?? '',
-  RESEND_FROM: process.env.RESEND_FROM ?? '"Ally-jis" <no-reply@ally-jis.xyz>',
+  RESEND_FROM: process.env.RESEND_FROM ?? '"Ally-jis" <no-reply@ally-jis.com>',
 
   // ─── OTP Configuration ────────────────────────────────────────────────────
   OTP_EXPIRY_MINUTES: Number(process.env.OTP_EXPIRY_MINUTES ?? 10),

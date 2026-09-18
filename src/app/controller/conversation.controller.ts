@@ -75,8 +75,16 @@ export const myMemberships = asyncHandler(async (req: Request, res: Response) =>
 // GET /conversations/:id/messages
 export const listMessages = asyncHandler(async (req: Request, res: Response) => {
   const id = String(req.params.id);
-  const messages = await conversationService.listMessages(id, req.userId as string);
-  res.status(200).json(messages);
+  const limit = req.query.limit !== undefined ? Math.min(Math.max(parseInt(String(req.query.limit), 10) || 30, 1), 100) : undefined;
+  const before = req.query.before ? String(req.query.before) : undefined;
+
+  const result = await conversationService.listMessages(id, req.userId as string, { limit, before });
+
+  if (limit !== undefined || before !== undefined) {
+    res.status(200).json(result);
+  } else {
+    res.status(200).json(result.messages);
+  }
 });
 
 // POST /conversations/:id/messages
@@ -140,4 +148,11 @@ export const deleteMessage = asyncHandler(async (req: Request, res: Response) =>
   }
 
   res.status(204).send();
+});
+
+// POST /conversations/:id/streak/restore
+export const restoreStreak = asyncHandler(async (req: Request, res: Response) => {
+  const conversationId = String(req.params.id);
+  const result = await conversationService.restoreStreakForConversation(conversationId, req.userId as string);
+  res.status(200).json(result);
 });

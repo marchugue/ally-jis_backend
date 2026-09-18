@@ -10,15 +10,15 @@ data already.
 `npm install` on the backend picks up `@types/jsonwebtoken` (new devDependency, needed for the
 force-logout check reading a token's `iat` claim).
 
-## 2. Domain (admin.ally-jis.xyz)
+## 2. Domain (admin.ally-jis.com)
 
 1. **DNS** (at your registrar): add a CNAME, host `admin`, pointing at whatever your hosting
    platform gives you for custom domains.
-2. **Hosting platform**: add `admin.ally-jis.xyz` as a custom domain in your project settings —
+2. **Hosting platform**: add `admin.ally-jis.com` as a custom domain in your project settings —
    the exact screen depends on where you deployed (Vercel/Netlify/Railway/etc.), didn't want to
    guess wrong so ask if you want the exact clicks for your specific host.
 3. Since `/admin` is a route inside this same app, not a separate deployment, I added a small
-   client-side redirect: visiting the bare `admin.ally-jis.xyz` root now sends you straight to
+   client-side redirect: visiting the bare `admin.ally-jis.com` root now sends you straight to
    `/admin` (`App.tsx`, checks `window.location.hostname`). Without this, the subdomain would
    just show the regular student welcome page — pointing DNS at the same deployment doesn't by
    itself know to land on a different route.
