@@ -12,9 +12,18 @@ import type { CreateConversationPayload, DeleteMessagePayload, MarkReadPayload, 
 
 // GET /conversations
 export const list = asyncHandler(async (req: Request, res: Response) => {
-  const conversations = await conversationService.listMyConversations(req.userId as string);
-  res.status(200).json(conversations);
+  const limit = req.query.limit !== undefined ? Math.min(Math.max(parseInt(String(req.query.limit), 10) || 20, 1), 50) : undefined;
+  const cursor = req.query.cursor ? String(req.query.cursor) : undefined;
+
+  const result = await conversationService.listMyConversations(req.userId as string, { limit, cursor });
+
+  if (limit !== undefined || cursor !== undefined) {
+    res.status(200).json(result);
+  } else {
+    res.status(200).json(result.conversations);
+  }
 });
+export const listConversations = list;
 
 // GET /conversations/:id
 export const getById = asyncHandler(async (req: Request, res: Response) => {
@@ -90,13 +99,14 @@ export const listMessages = asyncHandler(async (req: Request, res: Response) => 
 // POST /conversations/:id/messages
 export const sendMessage = asyncHandler(async (req: Request, res: Response) => {
   const id = String(req.params.id);
-  const { content, imageUrl, replyToMessageId } = req.body as SendMessagePayload;
+  const { content, imageUrl, imageUrls, replyToMessageId } = req.body as SendMessagePayload;
 
   const message = await conversationService.sendMessage({
     conversationId: id,
     senderId: req.userId as string,
     content: content ?? null,
     imageUrl,
+    imageUrls,
     replyToMessageId: replyToMessageId ?? null,
   });
 

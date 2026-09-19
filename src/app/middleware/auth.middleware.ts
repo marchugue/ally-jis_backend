@@ -99,6 +99,10 @@ export const authMiddleware = asyncHandler(async (req: Request, res: Response, n
       }
     }
 
+    // Prevent intermediate proxies and shared browsers from storing authenticated data on disk
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    res.setHeader('Pragma', 'no-cache');
+
     req.userId = user.id;
     req.accessToken = token;
     next();

@@ -81,6 +81,17 @@ export async function isMember(conversationId: string, userId: string): Promise<
   return !!data;
 }
 
+export interface FindConversationsOptions {
+  limit?: number;
+  cursor?: string;
+}
+
+export interface PaginatedConversationsResult {
+  conversations: ConversationRow[];
+  hasMore: boolean;
+  nextCursor: string | null;
+}
+
 /**
  * Fetches conversations (with nested messages + member profiles) for the
  * given list of ids, newest-updated first. Used by both GET /conversations
@@ -88,20 +99,57 @@ export async function isMember(conversationId: string, userId: string): Promise<
  * single-id list).
  */
 export async function findConversationsByIds(conversationIds: string[]): Promise<ConversationRow[]> {
-  if (conversationIds.length === 0) return [];
+  const { conversations } = await findConversationsByIdsPaginated(conversationIds);
+  return conversations;
+}
 
-  const { data, error } = await supabaseAdmin
+/**
+ * Fetches paginated conversations for the given list of ids, sorted newest-updated first.
+ */
+export async function findConversationsByIdsPaginated(
+  conversationIds: string[],
+  options?: FindConversationsOptions
+): Promise<PaginatedConversationsResult> {
+  if (conversationIds.length === 0) {
+    return { conversations: [], hasMore: false, nextCursor: null };
+  }
+
+  let query = supabaseAdmin
     .from('conversations')
     .select(
       `id, updated_at,
        messages ( id, conversation_id, sender_id, content, image_url, created_at ),
        conversation_members ( conversation_id, user_id, last_read_at, icebreakers_enabled, profiles (${MEMBER_PROFILE_COLUMNS}) )`
     )
-    .in('id', conversationIds)
-    .order('updated_at', { ascending: false });
+    .in('id', conversationIds);
 
+  if (options?.cursor) {
+    query = query.lt('updated_at', options.cursor);
+  }
+
+  const isPaginated = options?.limit !== undefined || options?.cursor !== undefined;
+  const limit = options?.limit ?? 20;
+
+  if (isPaginated) {
+    query = query.order('updated_at', { ascending: false }).limit(limit + 1);
+  } else {
+    query = query.order('updated_at', { ascending: false });
+  }
+
+  const { data, error } = await query;
   if (error) throw error;
-  return (data as unknown as ConversationRow[]) ?? [];
+
+  let rows = (data as unknown as ConversationRow[]) ?? [];
+  let hasMore = false;
+
+  if (isPaginated && rows.length > limit) {
+    hasMore = true;
+    rows = rows.slice(0, limit);
+  }
+
+  const nextCursor = hasMore && rows.length > 0 ? rows[rows.length - 1].updated_at : null;
+
+  return { conversations: rows, hasMore, nextCursor };
 }
 
 /**
@@ -378,9 +426,17 @@ export async function insertMessage(input: {
   senderId: string;
   content: string | null;
   imageUrl?: string | null;
+  imageUrls?: string[] | null;
   replyToMessageId?: string | null;
 }): Promise<MessageRow> {
-  const { conversationId, senderId, content, imageUrl, replyToMessageId } = input;
+  const { conversationId, senderId, content, imageUrl, imageUrls, replyToMessageId } = input;
+
+  let resolvedImageUrl: string | null = null;
+  if (Array.isArray(imageUrls) && imageUrls.length > 0) {
+    resolvedImageUrl = imageUrls.length === 1 ? imageUrls[0] : JSON.stringify(imageUrls);
+  } else if (imageUrl) {
+    resolvedImageUrl = imageUrl;
+  }
 
   const { data, error } = await supabaseAdmin
     .from('messages')
@@ -388,7 +444,7 @@ export async function insertMessage(input: {
       conversation_id: conversationId,
       sender_id: senderId,
       content,
-      image_url: imageUrl ?? null,
+      image_url: resolvedImageUrl,
       reply_to_message_id: replyToMessageId ?? null,
     })
     .select('id, conversation_id, sender_id, content, image_url, created_at, reply_to_message_id')

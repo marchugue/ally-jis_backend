@@ -163,8 +163,8 @@ export async function updateById(id: string, payload: UpdateProfilePayload): Pro
 
   if (error) throw error;
 
-  // Invalidate Redis profile cache and user flags
-  void delCache([`cache:profile:${id}`, `cache:user:flags:${id}`]);
+  // Invalidate Redis profile cache, user flags, and feed profile summary
+  void delCache([`cache:profile:${id}`, `cache:user:flags:${id}`, `cache:profile:summary:${id}`]);
 
   return data as ProfileRow;
 }

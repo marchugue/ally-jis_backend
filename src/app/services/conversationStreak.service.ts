@@ -31,6 +31,8 @@
 import { emitToUser } from './realtime.service';
 import { phtDateStr, phtDateStrOffset } from '../utils/pht';
 import * as model from '../models/conversationStreak.model';
+import { computeRestoreDeadline } from '../models/conversationStreak.model';
+import { HttpError } from '../types/auth.types';
 
 export { MIN_MESSAGES_PER_VALID_DAY } from '../models/conversationStreak.model';
 
@@ -137,14 +139,30 @@ export async function recomputeConversationStreak(
  * Restores a lapsed streak for a conversation using one of the caller's
  * restore tokens. Broadcasts the restored streak to all members.
  *
- * Throws if the user has no restore tokens remaining.
+ * Throws if:
+ * - The user has no restore tokens remaining.
+ * - The 42-hour restore window has expired (streak broke > 42 hours ago).
  */
 export async function restoreConversationStreak(
   conversationId: string,
   userId: string,
   allMemberIds: string[],
   currentStoredStreak: number,
+  streakLastActivePht: string | null,
 ): Promise<{ restoresRemaining: number; newStreak: number }> {
+  // ── Enforce 42-hour restore window ────────────────────────────────────────
+  if (!streakLastActivePht) {
+    // No prior streak at all — nothing to restore.
+    throw new HttpError('No streak to restore', 400);
+  }
+  const deadline = computeRestoreDeadline(streakLastActivePht);
+  if (new Date() >= deadline) {
+    throw new HttpError(
+      'The 42-hour streak restore window has expired. Start chatting to build a new streak!',
+      400,
+    );
+  }
+
   const result = await model.restoreStreak(conversationId, userId, currentStoredStreak);
 
   // Broadcast the restored streak to all members

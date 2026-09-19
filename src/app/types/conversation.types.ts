@@ -58,6 +58,11 @@ export interface ConversationRow {
   /** PHT-based consecutive-day streak for this conversation (all types). */
   dayStreak?: number;
   streakActiveToday?: boolean;
+  /**
+   * ISO UTC deadline by which the user can restore a lapsed streak.
+   * Null when streak is active, pending, or restore window has already expired.
+   */
+  streakRestoreDeadline?: string | null;
 }
 
 export type ConversationVariant = 'regular' | 'anonymous' | 'anonymous_ended';
@@ -67,6 +72,7 @@ export interface ConversationMatchInfo {
   stage: number;
   dayStreak: number;
   streakActiveToday?: boolean;
+  streakRestoreDeadline?: string | null;
   myAlias: string | null;
   myAvatar: string | null;
   partnerAlias: string | null;
@@ -101,6 +107,7 @@ export interface MarkReadPayload {
 export interface SendMessagePayload {
   content: string | null;
   imageUrl?: string | null;
+  imageUrls?: string[] | null;
   replyToMessageId?: string | null;
 }
 

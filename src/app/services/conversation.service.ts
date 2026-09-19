@@ -106,38 +106,66 @@ async function attachVariant(conversations: ConversationRow[], userId: string): 
   });
 }
 
+export interface ListConversationsOptions {
+  limit?: number;
+  cursor?: string;
+}
+
+export interface PaginatedConversationsResponse {
+  conversations: ConversationRow[];
+  hasMore: boolean;
+  nextCursor: string | null;
+}
+
 /**
  * GET /conversations
  */
-export async function listMyConversations(userId: string): Promise<ConversationRow[]> {
+export async function listMyConversations(
+  userId: string,
+  options?: ListConversationsOptions
+): Promise<PaginatedConversationsResponse> {
   const conversationIds = await conversationModel.findConversationIdsForUser(userId);
-  const [conversations, directions, streakMap] = await Promise.all([
-    conversationModel.findConversationsByIds(conversationIds),
+  const { conversations, hasMore, nextCursor } = await conversationModel.findConversationsByIdsPaginated(
+    conversationIds,
+    options
+  );
+
+  const paginatedIds = conversations.map((c) => c.id);
+  const [directions, streakMap] = await Promise.all([
     moderationModel.findBlockDirectionsForUser(userId),
-    streakModel.getStreaksForConversations(conversationIds),
+    streakModel.getStreaksForConversations(paginatedIds),
   ]);
 
   const withBlockStatus = attachBlockStatus(conversations, userId, directions);
   const withIcebreakers = attachIcebreakersEnabled(withBlockStatus, userId);
   const withVariant = await attachVariant(withIcebreakers, userId);
   // Attach general day streak and active-today status (works for all conversation types).
-  return withVariant.map((conv) => {
+  const processed = withVariant.map((conv) => {
     const streak = streakMap.get(conv.id);
     const dayStreak = streak?.dayStreak ?? 0;
     const streakActiveToday = streak?.streakActiveToday ?? false;
+    const streakRestoreDeadline = streak?.streakRestoreDeadline ?? null;
     return {
       ...conv,
       dayStreak,
       streakActiveToday,
+      streakRestoreDeadline,
       matchInfo: conv.matchInfo
         ? {
             ...conv.matchInfo,
             dayStreak,
             streakActiveToday,
+            streakRestoreDeadline,
           }
         : null,
     };
   });
+
+  return {
+    conversations: processed,
+    hasMore,
+    nextCursor,
+  };
 }
 
 /**
@@ -162,15 +190,18 @@ export async function getConversationById(conversationId: string, userId: string
   const streak = streakMap.get(conversationId);
   const dayStreak = streak?.dayStreak ?? 0;
   const streakActiveToday = streak?.streakActiveToday ?? false;
+  const streakRestoreDeadline = streak?.streakRestoreDeadline ?? null;
   return {
     ...withVariant,
     dayStreak,
     streakActiveToday,
+    streakRestoreDeadline,
     matchInfo: withVariant.matchInfo
       ? {
           ...withVariant.matchInfo,
           dayStreak,
           streakActiveToday,
+          streakRestoreDeadline,
         }
       : null,
   };
@@ -343,16 +374,17 @@ export async function sendMessage(input: {
   senderId: string;
   content: string | null;
   imageUrl?: string | null;
+  imageUrls?: string[] | null;
   replyToMessageId?: string | null;
 }): Promise<MessageRow> {
-  const { conversationId, senderId, content, imageUrl, replyToMessageId } = input;
+  const { conversationId, senderId, content, imageUrl, imageUrls, replyToMessageId } = input;
 
   const member = await conversationModel.isMember(conversationId, senderId);
   if (!member) {
     throw new HttpError('You are not a member of this conversation', 403);
   }
 
-  if (!content && !imageUrl) {
+  if (!content && !imageUrl && (!imageUrls || imageUrls.length === 0)) {
     throw new HttpError('Message must include content or an image', 400);
   }
 
@@ -377,6 +409,7 @@ export async function sendMessage(input: {
     senderId,
     content,
     imageUrl,
+    imageUrls,
     replyToMessageId,
   });
   await conversationModel.touchConversation(conversationId);
@@ -618,8 +651,9 @@ export async function deleteMessageForEveryone(
  *
  * Restores a lapsed streak using one of the caller's restore tokens.
  * - Validates the caller is a member.
- * - Reads the current stored streak value.
- * - Delegates to streakService which decrements token, writes DB, and broadcasts.
+ * - Reads the current stored streak value AND last active PHT date.
+ * - Delegates to streakService which enforces the 42h window, decrements
+ *   token, writes DB, and broadcasts.
  * Returns { restoresRemaining, newStreak }.
  */
 export async function restoreStreakForConversation(
@@ -639,9 +673,16 @@ export async function restoreStreakForConversation(
   if (memErr) throw memErr;
   const allMemberIds = (memberRows ?? []).map((m: { user_id: string }) => m.user_id);
 
-  // Get the current stored streak (may be 0 if lapsed)
+  // Get the current stored streak (may be 0 if lapsed) + last active PHT date
   const currentRow = await streakModel.getStreak(conversationId);
   const currentStreak = currentRow?.day_streak ?? 0;
+  const streakLastActivePht = currentRow?.streak_last_active_pht ?? null;
 
-  return streakService.restoreConversationStreak(conversationId, userId, allMemberIds, currentStreak);
+  return streakService.restoreConversationStreak(
+    conversationId,
+    userId,
+    allMemberIds,
+    currentStreak,
+    streakLastActivePht,
+  );
 }

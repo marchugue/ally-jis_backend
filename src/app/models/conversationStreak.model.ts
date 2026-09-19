@@ -106,6 +106,29 @@ export async function getStreak(conversationId: string): Promise<ConversationStr
 export interface ConversationStreakResult {
   dayStreak: number;
   streakActiveToday: boolean;
+  /**
+   * ISO UTC timestamp — the deadline by which the user can still restore a
+   * lapsed streak (streak_last_active_pht + 1 day at midnight PHT + 42 hours).
+   * Present only when the streak has lapsed (dayStreak === 0 and a prior
+   * streak existed). Null otherwise.
+   */
+  streakRestoreDeadline: string | null;
+}
+
+/**
+ * Computes the restore deadline for a lapsed streak.
+ *
+ * The streak broke at midnight PHT the day after the last active day.
+ * Users have 42 hours from that midnight to restore their streak.
+ *
+ * deadline = midnight PHT of (streakLastActivePht + 1 day) + 42 hours
+ */
+export function computeRestoreDeadline(streakLastActivePht: string): Date {
+  // Midnight PHT of the day AFTER the last active day (= when the streak broke)
+  const brokeAtPht = new Date(`${streakLastActivePht}T00:00:00.000+08:00`);
+  brokeAtPht.setDate(brokeAtPht.getDate() + 1);
+  // Add 42 hours
+  return new Date(brokeAtPht.getTime() + 42 * 60 * 60 * 1000);
 }
 
 /**
@@ -118,28 +141,30 @@ export interface ConversationStreakResult {
  * - If last active today: streak is storedStreak, active today ✅
  * - If last active yesterday: streak is storedStreak, NOT yet activated today (pending) 🟡
  * - If last active before yesterday (or none): streak has expired → 0 ❌
+ *   In the lapsed case, streakRestoreDeadline is set to the 42h window deadline.
  */
 export function computeEffectiveStreak(
   storedStreak: number,
   streakLastActivePht: string | null,
 ): ConversationStreakResult {
-  if (!streakLastActivePht || storedStreak <= 0) {
-    return { dayStreak: 0, streakActiveToday: false };
+  if (!streakLastActivePht) {
+    return { dayStreak: 0, streakActiveToday: false, streakRestoreDeadline: null };
   }
 
   const today = phtDateStr();
   const yesterday = phtDateStrOffset(-1);
 
-  if (streakLastActivePht === today) {
+  if (storedStreak > 0 && streakLastActivePht === today) {
     // Both participants chatted today — streak is live and active.
-    return { dayStreak: storedStreak, streakActiveToday: true };
-  } else if (streakLastActivePht === yesterday) {
+    return { dayStreak: storedStreak, streakActiveToday: true, streakRestoreDeadline: null };
+  } else if (storedStreak > 0 && streakLastActivePht === yesterday) {
     // Yesterday was the last active day; today hasn't been activated yet.
     // Show the existing streak count (do NOT add +1 — it hasn't been earned yet).
-    return { dayStreak: storedStreak, streakActiveToday: false };
+    return { dayStreak: storedStreak, streakActiveToday: false, streakRestoreDeadline: null };
   } else {
-    // Missed a day — streak has lapsed.
-    return { dayStreak: 0, streakActiveToday: false };
+    // Missed a day (or midnight reset) — streak has lapsed. Compute the 42-hour restore deadline.
+    const deadline = computeRestoreDeadline(streakLastActivePht);
+    return { dayStreak: 0, streakActiveToday: false, streakRestoreDeadline: deadline.toISOString() };
   }
 }
 
