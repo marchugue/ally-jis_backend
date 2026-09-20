@@ -517,6 +517,20 @@ export async function sendMessage(input: {
         for (const recipientId of otherMemberIds) {
           const token = tokenMap.get(recipientId);
           if (token) {
+            let unreadBadge = 1;
+            try {
+              const { count } = await supabaseAdmin
+                .from('notifications')
+                .select('id', { count: 'exact', head: true })
+                .eq('user_id', recipientId)
+                .eq('is_read', false);
+              if (typeof count === 'number' && count > 0) {
+                unreadBadge = count;
+              }
+            } catch {
+              unreadBadge = 1;
+            }
+
             pushMessages.push({
               to: token,
               sound: 'default' as const,
@@ -524,6 +538,7 @@ export async function sendMessage(input: {
               body: pushBody,
               channelId: 'default',
               categoryId: 'message_actions',
+              badge: unreadBadge,
               data: {
                 conversationId,
                 type: isAnon ? 'anon_match' : 'message',
