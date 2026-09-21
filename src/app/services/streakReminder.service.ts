@@ -10,18 +10,24 @@ import { MIN_MESSAGES_PER_VALID_DAY } from '../models/conversationStreak.model';
 let lastRunPhtDate: string | null = null;
 let schedulerTimer: NodeJS.Timeout | null = null;
 
+export interface StreakReminderOptions {
+  force?: boolean;
+  userId?: string;
+}
+
 /**
  * Checks all conversations with an active streak (> 0).
  * If today's PHT streak has not yet been extended/activated,
  * sends a reminder notification to the members who still need to send a message.
  */
-export async function checkAndSendStreakReminders(): Promise<{
+export async function checkAndSendStreakReminders(options?: StreakReminderOptions): Promise<{
   conversationsChecked: number;
   remindersSent: number;
 }> {
+  const force = options?.force ?? false;
   const today = phtDateStr();
   const yesterday = phtDateStrOffset(-1);
-  console.log(`[StreakReminder] Checking unactivated streaks for PHT date: ${today}`);
+  console.log(`[StreakReminder] Checking unactivated streaks for PHT date: ${today} (force=${force})`);
 
   // 1. Fetch conversations with an ongoing streak (> 0)
   const { data: streaks, error: streakErr } = await supabaseAdmin
@@ -34,18 +40,40 @@ export async function checkAndSendStreakReminders(): Promise<{
     return { conversationsChecked: 0, remindersSent: 0 };
   }
 
-  if (!streaks || streaks.length === 0) {
-    console.log('[StreakReminder] No active streaks found.');
+  let targetStreaks = streaks || [];
+
+  // If force mode and no active streaks found, fall back to recent conversations so testing succeeds
+  if (force && targetStreaks.length === 0) {
+    console.log('[StreakReminder] Force mode: No active streaks found. Falling back to active conversations.');
+    const { data: convs } = await supabaseAdmin
+      .from('conversations')
+      .select('id')
+      .order('updated_at', { ascending: false })
+      .limit(5);
+
+    if (convs && convs.length > 0) {
+      targetStreaks = convs.map((c) => ({
+        conversation_id: c.id,
+        day_streak: 1,
+        streak_last_active_pht: yesterday,
+      }));
+    }
+  }
+
+  if (targetStreaks.length === 0) {
+    console.log('[StreakReminder] No active streaks or conversations found.');
     return { conversationsChecked: 0, remindersSent: 0 };
   }
 
-  // 2. Filter for conversations where the streak was active yesterday but NOT yet activated today
-  const pendingStreaks = streaks.filter(
-    (row) => row.streak_last_active_pht === yesterday
-  );
+  // 2. Filter for conversations where the streak was NOT yet activated today:
+  // In normal mode: streak_last_active_pht !== today
+  // In force mode: all target streaks
+  const pendingStreaks = force
+    ? targetStreaks
+    : targetStreaks.filter((row) => row.streak_last_active_pht !== today);
 
   console.log(
-    `[StreakReminder] Found ${pendingStreaks.length} conversation(s) with streak not yet activated today.`
+    `[StreakReminder] Found ${pendingStreaks.length} conversation(s) with streak to process.`
   );
 
   let remindersSent = 0;
@@ -80,36 +108,50 @@ export async function checkAndSendStreakReminders(): Promise<{
       .map((m) => m.user_id as string)
       .filter((uid) => !activeUserIds.has(uid));
 
-    // Fallback: If both need to be notified
-    const notifyUserIds = targetUserIds.length > 0 ? targetUserIds : members.map((m) => m.user_id as string);
+    // Fallback: If both need to be notified, or in force mode
+    let notifyUserIds = targetUserIds.length > 0 ? targetUserIds : members.map((m) => m.user_id as string);
+
+    // Filter by specific user if provided
+    if (options?.userId) {
+      notifyUserIds = notifyUserIds.filter((uid) => uid === options.userId);
+    }
 
     for (const userId of notifyUserIds) {
-      // Check if already notified today to prevent spam
-      const { data: existingNotifs } = await supabaseAdmin
-        .from('notifications')
-        .select('id')
-        .eq('user_id', userId)
-        .eq('type', 'streak_reminder')
-        .eq('target_id', conversationId)
-        .gte('created_at', midnightUtc)
-        .limit(1);
+      // In normal mode: check if already notified today to prevent spam.
+      // In force mode: allow sending test notifications.
+      if (!force) {
+        const { data: existingNotifs } = await supabaseAdmin
+          .from('notifications')
+          .select('id, description')
+          .eq('user_id', userId)
+          .eq('type', 'streak_reminder')
+          .gte('created_at', midnightUtc);
 
-      if (existingNotifs && existingNotifs.length > 0) {
-        continue;
+        const alreadyNotified = (existingNotifs || []).some((n) =>
+          n.description?.includes(conversationId)
+        );
+
+        if (alreadyNotified) {
+          continue;
+        }
       }
 
       const notifTitle = 'Streak Reminder 🔥';
       const notifDesc = 'Your streak is not yet activated! Send a message to activate.';
+      const descWithMeta = `<!--meta:${JSON.stringify({ targetId: conversationId })}-->${notifDesc}`;
 
-      // Insert DB notification
+      // Insert DB notification (embedding targetId in description metadata)
       const { error: insErr } = await supabaseAdmin.from('notifications').insert({
         user_id: userId,
         type: 'streak_reminder',
         title: notifTitle,
-        description: notifDesc,
-        target_id: conversationId,
+        description: descWithMeta,
         is_read: false,
       });
+
+      if (insErr) {
+        console.error(`[StreakReminder] Failed to insert notification for user ${userId}:`, insErr);
+      }
 
       if (!insErr) {
         remindersSent++;

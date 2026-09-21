@@ -34,14 +34,16 @@ function internalKeyMiddleware(req: Request, res: Response, next: NextFunction):
 
 // POST /api/notifications/test-streak-reminders
 // Accessible by control panel (internal key) OR authenticated users
-router.post('/test-streak-reminders', internalKeyMiddleware, async (_req, res) => {
-  const result = await checkAndSendStreakReminders();
+router.post('/test-streak-reminders', internalKeyMiddleware, async (req, res) => {
+  const force = req.body?.force !== false;
+  const result = await checkAndSendStreakReminders({ force });
   res.status(200).json(result);
 });
 
 // POST /api/notifications/test-streak-reminders — auth-guarded fallback
-router.post('/test-streak-reminders', authMiddleware, async (_req, res) => {
-  const result = await checkAndSendStreakReminders();
+router.post('/test-streak-reminders', authMiddleware, async (req, res) => {
+  const force = req.body?.force !== false;
+  const result = await checkAndSendStreakReminders({ force, userId: (req as any).user?.id });
   res.status(200).json(result);
 });
 
