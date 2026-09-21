@@ -8,6 +8,8 @@ import * as streakModel from '../models/conversationStreak.model';
 import { supabaseAdmin } from '../../config/supabase';
 import { emitToUser } from './realtime.service';
 import { HttpError } from '../types/auth.types';
+import { getStageCapabilities } from '../constants/progression';
+import * as interactionModel from '../models/interaction.model';
 import type {
   ConversationIdResponse,
   ConversationMembershipRow,
@@ -59,6 +61,12 @@ const TERMINAL_MATCH_STATUSES = new Set(['declined', 'timed_out', 'expired', 'en
  * revealed yet. Every caller that returns a ConversationRow to a client
  * (list, getById) goes through this — there's no second code path that
  * could forget to anonymize.
+ *
+ * SECURITY LAYERS:
+ *  1. DB `type` column — 'allied' = safe to show real data, 'anonymous' = strip it.
+ *  2. Match `revealedAt` — secondary check (covers pre-migration rows).
+ *  3. Profile strip — always removes partner profiles from anonymous convs
+ *     even if layers 1+2 disagree (defense in depth).
  */
 async function attachVariant(conversations: ConversationRow[], userId: string): Promise<ConversationRow[]> {
   const matchInfoByConversation = await matchModel.findMatchInfoForConversations(
@@ -67,17 +75,29 @@ async function attachVariant(conversations: ConversationRow[], userId: string): 
   );
 
   return conversations.map((conv) => {
+    const convType = (conv as any).type as 'anonymous' | 'allied' | undefined;
+
+    // Layer 1: DB type = 'allied' → always treat as regular/revealed.
+    if (convType === 'allied') {
+      return { ...conv, variant: 'regular' as const, matchInfo: null };
+    }
+
     const match = matchInfoByConversation.get(conv.id);
+
+    // Layer 2: No match link, or match is already revealed → regular.
     if (!match || match.revealedAt) {
       return { ...conv, variant: 'regular' as const, matchInfo: null };
     }
 
     const ended = TERMINAL_MATCH_STATUSES.has(match.status);
+    const capabilities = getStageCapabilities(match.currentStage);
     const matchInfo = {
       id: match.matchId,
       matchId: match.matchId,
       status: match.status,
       stage: match.currentStage,
+      stageName: capabilities.stageName,
+      capabilities,
       dayStreak: match.dayStreak,
       myAlias: match.myAlias,
       myAvatar: match.myAvatar,
@@ -88,9 +108,9 @@ async function attachVariant(conversations: ConversationRow[], userId: string): 
       ended,
     };
 
-    // Strip real profile data for the other member(s) — defense in depth,
-    // so an anonymous conversation never carries a real name/avatar to
-    // the client even if a future caller forgets to check `variant`.
+    // Layer 3: Strip real profile data for the partner — defense in depth.
+    // An anonymous conversation NEVER carries a real name/avatar to the client,
+    // even if a future caller forgets to check `variant` or `type`.
     const strippedMembers = (conv.conversation_members ?? []).map((member) =>
       member.user_id === userId ? member : { ...member, profiles: undefined },
     );
@@ -278,14 +298,13 @@ export async function getIcebreakersEnabled(
 
 /**
  * POST /conversations
- * Finds the existing 1:1 conversation between the two users, or creates
- * one. Reuse check runs first and unconditionally — an existing (possibly
- * blocked) conversation is always returned rather than gated, matching how
- * blocked conversations stay visible everywhere else. The block check only
- * applies to *new* conversations: starting a fresh thread with someone who
- * has blocked you (or whom you've blocked) doesn't make sense. Flagging
- * this as an addition since it wasn't in the original file — remove the
- * isBlocked check below if that's not the intended behavior.
+ *
+ * Two paths:
+ *  1. ALLIES — return their existing 'allied' conversation directly.
+ *     They already completed the 4-stage roadmap; no need to re-do it.
+ *     If somehow no allied conversation exists yet, create one (type='allied').
+ *  2. NON-ALLIES — route through the anonymous matching pipeline (Stage 1).
+ *     Real identity stays hidden until Stage 4 is reached.
  */
 export async function getOrCreateConversation(
   userId: string,
@@ -295,20 +314,31 @@ export async function getOrCreateConversation(
     throw new HttpError('Cannot start a conversation with yourself', 400);
   }
 
-  const existingId = await conversationModel.findSharedConversationId(userId, targetUserId);
-  if (existingId) {
-    return { conversationId: existingId };
-  }
-
   const blocked = await moderationModel.isBlocked(userId, targetUserId);
   if (blocked) {
     throw new HttpError('You cannot start a conversation with this user', 403);
   }
 
-  const conversationId = await conversationModel.createConversation();
-  await conversationModel.addMembers(conversationId, [userId, targetUserId]);
+  // Check if they are confirmed allies — if so, go straight to their chat.
+  const areAllies = await interactionModel.isAllies(userId, targetUserId);
 
-  return { conversationId };
+  if (areAllies) {
+    // Return existing allied conversation, or create one if somehow missing.
+    let conversationId = await conversationModel.findAlliedConversationId(userId, targetUserId);
+    if (!conversationId) {
+      // Fallback: also check any shared conversation (pre-migration rows won't have type='allied' yet)
+      conversationId = await conversationModel.findSharedConversationId(userId, targetUserId);
+    }
+    if (!conversationId) {
+      conversationId = await conversationModel.createConversation('allied');
+      await conversationModel.addMembers(conversationId, [userId, targetUserId]);
+    }
+    return { conversationId };
+  }
+
+  // Non-allies: always route through anonymous matching pipeline.
+  const result = await matchmakingService.requestDirectMatch(userId, targetUserId);
+  return { conversationId: result.conversationId };
 }
 
 /**
@@ -386,6 +416,15 @@ export async function sendMessage(input: {
 
   if (!content && !imageUrl && (!imageUrls || imageUrls.length === 0)) {
     throw new HttpError('Message must include content or an image', 400);
+  }
+
+  // ── Stage 3 Gating: Image uploads are strictly locked until Stage 3 ──
+  const hasImages = Boolean(imageUrl || (imageUrls && imageUrls.length > 0));
+  if (hasImages) {
+    const match = await matchModel.getMatchByConversationId(conversationId);
+    if (match && !match.revealed_at && match.current_stage < 3) {
+      throw new HttpError('Image and media sharing is locked until Stage 3 of the Ally Roadmap', 403);
+    }
   }
 
   if (replyToMessageId) {

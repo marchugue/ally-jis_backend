@@ -307,7 +307,12 @@ export async function resetPasswordWithToken(accessToken: string, newPassword: s
   const { data, error: userError } = await supabasePublic.auth.getUser(accessToken);
   if (userError) throw userError;
 
-  const { error: updateError } = await supabaseAdmin.auth.admin.updateUserById(data.user.id, {
+  await updateUserPassword(data.user.id, newPassword);
+}
+
+/** Updates password via Supabase Admin API (used by reset link and change-password). */
+export async function updateUserPassword(userId: string, newPassword: string): Promise<void> {
+  const { error: updateError } = await supabaseAdmin.auth.admin.updateUserById(userId, {
     password: newPassword,
   });
   if (updateError) throw updateError;

@@ -117,7 +117,7 @@ export async function findConversationsByIdsPaginated(
   let query = supabaseAdmin
     .from('conversations')
     .select(
-      `id, updated_at,
+      `id, updated_at, type,
        messages ( id, conversation_id, sender_id, content, image_url, created_at ),
        conversation_members ( conversation_id, user_id, last_read_at, icebreakers_enabled, profiles (${MEMBER_PROFILE_COLUMNS}) )`
     )
@@ -153,10 +153,40 @@ export async function findConversationsByIdsPaginated(
 }
 
 /**
- * Finds a conversation shared by both users (mirrors get_shared_conversation
- * in schema.sql).
+ * Finds ANY conversation shared by both users — used internally when
+ * we need to check existence without caring about type.
+ * NOTE: Prefer the typed variants below when you know what you want.
  */
 export async function findSharedConversationId(userIdA: string, userIdB: string): Promise<string | null> {
+  return findTypedSharedConversationId(userIdA, userIdB, null);
+}
+
+/**
+ * Finds the most-recently-updated ALLIED (type='allied') conversation
+ * shared by both users. Returns null if none exists.
+ */
+export async function findAlliedConversationId(userIdA: string, userIdB: string): Promise<string | null> {
+  return findTypedSharedConversationId(userIdA, userIdB, 'allied');
+}
+
+/**
+ * Finds the most-recently-updated ANONYMOUS (type='anonymous') conversation
+ * shared by both users. Returns null if none exists.
+ * Used only for resuming an in-progress anonymous match that was already
+ * started (e.g. socket reconnect) — never for creating new ones.
+ */
+export async function findActiveAnonymousConversationId(userIdA: string, userIdB: string): Promise<string | null> {
+  return findTypedSharedConversationId(userIdA, userIdB, 'anonymous');
+}
+
+/**
+ * Internal helper. When type is null, returns any shared conversation.
+ */
+async function findTypedSharedConversationId(
+  userIdA: string,
+  userIdB: string,
+  type: 'anonymous' | 'allied' | null,
+): Promise<string | null> {
   const { data: ownRows, error: ownError } = await supabaseAdmin
     .from('conversation_members')
     .select('conversation_id')
@@ -167,25 +197,64 @@ export async function findSharedConversationId(userIdA: string, userIdB: string)
   const conversationIds = (ownRows ?? []).map((row) => row.conversation_id as string);
   if (conversationIds.length === 0) return null;
 
+  // Find conversations userB is also a member of
   const { data: sharedRows, error: sharedError } = await supabaseAdmin
     .from('conversation_members')
     .select('conversation_id')
     .eq('user_id', userIdB)
-    .in('conversation_id', conversationIds)
-    .limit(1);
+    .in('conversation_id', conversationIds);
 
   if (sharedError) throw sharedError;
-  return (sharedRows?.[0]?.conversation_id as string | undefined) ?? null;
+
+  const sharedIds = (sharedRows ?? []).map((r) => r.conversation_id as string);
+  if (sharedIds.length === 0) return null;
+
+  // Apply type filter at the conversations table level
+  let convQuery = supabaseAdmin
+    .from('conversations')
+    .select('id')
+    .in('id', sharedIds)
+    .order('updated_at', { ascending: false })
+    .limit(1);
+
+  if (type !== null) {
+    convQuery = convQuery.eq('type', type);
+  }
+
+  const { data: convRows, error: convError } = await convQuery;
+  if (convError) throw convError;
+  return (convRows?.[0]?.id as string | undefined) ?? null;
 }
 
 /**
- * Creates a new conversation row, returning its id.
+ * Creates a new conversation row of the given type, returning its id.
+ * Defaults to 'anonymous' — the safe default that keeps profile data
+ * stripped until Stage 4 is explicitly reached.
  */
-export async function createConversation(): Promise<string> {
-  const { data, error } = await supabaseAdmin.from('conversations').insert({}).select('id').single();
+export async function createConversation(
+  type: 'anonymous' | 'allied' = 'anonymous',
+): Promise<string> {
+  const { data, error } = await supabaseAdmin
+    .from('conversations')
+    .insert({ type })
+    .select('id')
+    .single();
 
   if (error) throw error;
   return (data as { id: string }).id;
+}
+
+/**
+ * Upgrades a conversation's type from 'anonymous' → 'allied'.
+ * Called exclusively by matchmaking.service when Stage 4 is reached.
+ */
+export async function upgradeConversationToAllied(conversationId: string): Promise<void> {
+  const { error } = await supabaseAdmin
+    .from('conversations')
+    .update({ type: 'allied' })
+    .eq('id', conversationId)
+    .eq('type', 'anonymous'); // guard: only upgrade, never downgrade
+  if (error) throw error;
 }
 
 /**

@@ -1,5 +1,8 @@
 import * as interactionModel from '../models/interaction.model';
+import * as notificationModel from '../models/notification.model';
+import * as matchModel from '../models/matchmaking.model';
 import * as matchmakingService from './matchmaking.service';
+import { emitToUser } from './realtime.service';
 import { HttpError } from '../types/auth.types';
 import type {
   AcceptConnectionResponse,
@@ -15,7 +18,40 @@ import type {
  * GET /interactions
  */
 export async function listMyInteractions(userId: string): Promise<InteractionRow[]> {
-  return interactionModel.findAllByUser(userId);
+  const [interactionRows, activeMatches] = await Promise.all([
+    interactionModel.findAllByUser(userId),
+    matchModel.getActiveMatchesForUser(userId),
+  ]);
+
+  const partnerIds = new Set(interactionRows.map((r) => r.target_user_id));
+  const result: InteractionRow[] = [...interactionRows];
+
+  for (const match of activeMatches) {
+    const partnerId = match.user_a_id === userId ? match.user_b_id : match.user_a_id;
+    if (partnerIds.has(partnerId)) continue;
+
+    // Determine if match is pending acceptance or already accepted
+    let status: 'pending' | 'accepted' = 'accepted';
+    if (match.user_a_id === userId) {
+      // User A requested User B. If User B has an unhandled friend_request notification, it's pending.
+      const isPending = await notificationModel.hasPendingFriendRequest(match.user_b_id, userId).catch(() => false);
+      if (isPending) status = 'pending';
+    } else if (match.user_b_id === userId) {
+      // User B received request from User A. If User B has unhandled friend_request, it's pending.
+      const isPending = await notificationModel.hasPendingFriendRequest(userId, match.user_a_id).catch(() => false);
+      if (isPending) status = 'pending';
+    }
+
+    result.push({
+      user_id: userId,
+      target_user_id: partnerId,
+      status,
+      accepted_at: status === 'accepted' ? (match.confirmed_at || match.created_at) : null,
+    });
+    partnerIds.add(partnerId);
+  }
+
+  return result;
 }
 
 /**
@@ -27,80 +63,58 @@ export async function listIncoming(targetUserId: string, requesterIds: string[])
 
 /**
  * POST /interactions/request
- * Upserts a pending request and notifies the target user. If a request
- * already exists in any state it's reset back to pending (re-requesting
- * after a rejection is allowed), matching the ON CONFLICT...DO UPDATE in
- * the reference SQL.
+ * Initiates an anonymous match request at Stage 1. Users must progress
+ * through the 4-stage roadmap before becoming official allies.
  */
 export async function requestConnection(userId: string, targetUserId: string): Promise<void> {
   if (userId === targetUserId) {
     throw new HttpError('Cannot send a connection request to yourself', 409);
   }
 
-  await interactionModel.upsertInteraction({
-    userId,
-    targetUserId,
-    status: 'pending',
-    acceptedAt: null,
-  });
-
-  await interactionModel.createNotification({
-    userId: targetUserId,
-    type: 'friend_request',
-    title: 'New Connection Request',
-    description: 'Someone wants to connect with you! Check your requests to accept.',
-    fromUserId: userId,
-    targetId: userId,
-  });
+  await matchmakingService.requestDirectMatch(userId, targetUserId);
 }
 
 /**
  * POST /interactions/accept
- * Mirrors accept_connection() in schema.sql: flips both directions to
- * accepted, finds-or-creates the shared conversation, adds both members,
- * and notifies the original requester.
+ * Accepts a match invitation and opens an anonymous Stage 1 chat.
+ *
+ * SECURITY: Does NOT grant ally status or reveal identities here.
+ * Accepting only starts the anonymous roadmap at Stage 1.
+ * Real identities are revealed automatically when Stage 4 is completed
+ * via matchmaking.service.ts#recomputeProgression.
  */
 export async function acceptConnection(
   currentUserId: string,
   requesterId: string
 ): Promise<AcceptConnectionResponse> {
-  const acceptedAt = new Date().toISOString();
+  // Start (or resume) the anonymous match — always Stage 1, always anonymous.
+  const result = await matchmakingService.requestDirectMatch(currentUserId, requesterId);
 
-  // 1. Mark the requester's original row accepted.
-  await interactionModel.markAccepted(requesterId, currentUserId, acceptedAt);
-
-  // 2. Upsert the reverse row so the connection is symmetric.
-  await interactionModel.upsertInteraction({
-    userId: currentUserId,
-    targetUserId: requesterId,
-    status: 'accepted',
-    acceptedAt,
+  // Remove the friend_request notification for the current user once handled.
+  await notificationModel.deleteFriendRequestNotification(currentUserId, requesterId).catch((err) => {
+    console.warn('Failed to delete handled friend_request notification:', err);
   });
 
-  // 3. Find or create the shared conversation.
-  let conversationId = await interactionModel.findSharedConversationId(currentUserId, requesterId);
-  if (!conversationId) {
-    conversationId = await interactionModel.createConversation();
-  }
-
-  // 4. Make sure both users are members.
-  await interactionModel.addConversationMembers(conversationId, [currentUserId, requesterId]);
-
-  // 4b. If these two were an anonymous match, this is the reclassification
-  // point — no-ops if they weren't matched, or already revealed.
-  await matchmakingService.markRevealedIfMatched(currentUserId, requesterId);
-
-  // 5. Notify the requester their request was accepted.
+  // Notify the requester that their request was accepted and the anonymous
+  // chat is ready — use a neutral message that does not reveal identity.
   await interactionModel.createNotification({
     userId: requesterId,
-    type: 'accepted',
-    title: 'Request Accepted!',
-    description: 'Your connection request was accepted. You can now message each other.',
-    fromUserId: currentUserId,
-    targetId: conversationId,
+    type: 'connection_accepted',
+    title: 'Match Request Accepted!',
+    description: 'Your match request was accepted! Start your anonymous chat to begin the Ally Roadmap.',
+    fromUserId: null as any, // deliberately null — do NOT expose acceptor identity
+    targetId: result.conversationId,
+  }).catch((err) => {
+    console.warn('Failed to notify requester of accepted match:', err);
   });
 
-  return { conversationId };
+  // Emit realtime event to the requester so their UI opens the anonymous chat.
+  // fromUserId is intentionally omitted to avoid client-side identity leaks.
+  emitToUser(requesterId, 'matchmaking:match_accepted', {
+    conversationId: result.conversationId,
+  });
+
+  return { conversationId: result.conversationId };
 }
 
 /**
@@ -113,6 +127,19 @@ export async function rejectConnection(userId: string, targetUserId: string): Pr
     status: 'rejected',
     acceptedAt: null,
   });
+
+  // Remove the friend_request notification once declined/rejected
+  await notificationModel.deleteFriendRequestNotification(userId, targetUserId).catch((err) => {
+    console.warn('Failed to delete declined friend_request notification:', err);
+  });
+
+  // End active match between them if any
+  const existingMatch = await matchModel.findActiveMatchBetweenUsers(userId, targetUserId).catch(() => null);
+  if (existingMatch) {
+    await matchmakingService.endMatch(existingMatch.id, userId).catch((err) => {
+      console.warn('Failed to end match on rejection:', err);
+    });
+  }
 }
 
 /**
@@ -122,7 +149,14 @@ export async function getConnectionStatus(
   userId: string,
   targetUserId: string
 ): Promise<ConnectionStatusResponse> {
-  const status = await interactionModel.findStatus(userId, targetUserId);
+  let status = await interactionModel.findStatus(userId, targetUserId);
+  if (!status) {
+    const activeMatch = await matchModel.findActiveMatchBetweenUsers(userId, targetUserId).catch(() => null);
+    if (activeMatch) {
+      const targetHasReq = await notificationModel.hasPendingFriendRequest(targetUserId, userId).catch(() => false);
+      status = targetHasReq ? 'pending' : 'accepted';
+    }
+  }
   return { status };
 }
 
@@ -162,9 +196,35 @@ export async function getRelationshipStatus(userId: string, targetUserId: string
   ]);
 
   let status: RelationshipStatus = 'none';
-  if (mine === 'accepted' && theirs === 'accepted') status = 'allies';
-  else if (mine === 'pending') status = 'pending_outgoing';
-  else if (theirs === 'pending') status = 'pending_incoming';
+  if (mine === 'accepted' && theirs === 'accepted') {
+    status = 'allies';
+  } else if (mine === 'pending') {
+    status = 'pending_outgoing';
+  } else if (theirs === 'pending') {
+    status = 'pending_incoming';
+  } else {
+    // Check active match from matchmaking
+    const activeMatch = await matchModel.findActiveMatchBetweenUsers(userId, targetUserId).catch(() => null);
+    if (activeMatch) {
+      if (activeMatch.revealed_at) {
+        status = 'allies';
+      } else {
+        const [targetHasReq, userHasReq] = await Promise.all([
+          notificationModel.hasPendingFriendRequest(targetUserId, userId).catch(() => false),
+          notificationModel.hasPendingFriendRequest(userId, targetUserId).catch(() => false),
+        ]);
+
+        if (targetHasReq) {
+          status = 'pending_outgoing';
+        } else if (userHasReq) {
+          status = 'pending_incoming';
+        } else {
+          // Both sides accepted! Active match in progress
+          status = 'allies';
+        }
+      }
+    }
+  }
 
   return { status };
 }

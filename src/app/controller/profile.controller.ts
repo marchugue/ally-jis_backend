@@ -20,7 +20,7 @@ export const getMe = asyncHandler(async (req: Request, res: Response) => {
 // GET /profiles/:userId
 export const getById = asyncHandler(async (req: Request, res: Response) => {
   const userId = String(req.params.userId);
-  const profile = await profileService.getProfile(userId);
+  const profile = await profileService.getProfile(userId, req.userId as string);
   res.status(200).json(profile);
 });
 
@@ -107,7 +107,7 @@ export const discover = asyncHandler(async (req: Request, res: Response) => {
 // POST /profiles/batch
 export const batch = asyncHandler(async (req: Request, res: Response) => {
   const { ids } = req.body as BatchProfilesPayload;
-  const profiles = await profileService.getProfilesByIds(ids ?? []);
+  const profiles = await profileService.getProfilesByIds(ids ?? [], req.userId as string);
   res.status(200).json(profiles);
 });
 

@@ -14,10 +14,12 @@ import matchRoutes from './matchmaking.routes';
 import followRoutes from './follow.routes';
 import adminRoutes from './admin.routes';
 import { maintenanceMiddleware } from '../app/middleware/maintenance.middleware';
+import { anonymityMiddleware } from '../app/middleware/anonymity.middleware';
 
 const router = Router();
 
 router.use(maintenanceMiddleware);
+router.use(anonymityMiddleware);
 
 router.use('/health', healthRoutes);
 router.use('/auth', authRoutes);

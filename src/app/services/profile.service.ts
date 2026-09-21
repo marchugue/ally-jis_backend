@@ -1,4 +1,5 @@
 import * as profileModel from '../models/profile.model';
+import * as interactionModel from '../models/interaction.model';
 import { HttpError } from '../types/auth.types';
 import * as followModel from '../models/follow.model';
 import type { DiscoverProfileItem, ProfileFilterOptions, ProfileRow, UpdateProfilePayload, UsernameAvailability } from '../types/profile.types';
@@ -6,11 +7,26 @@ import type { DiscoverProfileItem, ProfileFilterOptions, ProfileRow, UpdateProfi
 /**
  * GET /profiles/me, GET /profiles/:userId
  */
-export async function getProfile(id: string): Promise<ProfileRow> {
+export async function getProfile(id: string, viewerId?: string): Promise<ProfileRow> {
   const profile = await profileModel.findById(id);
   if (!profile) {
     throw new HttpError('Profile not found', 404);
   }
+
+  // If viewing another user and not confirmed allies, mask real identifying info
+  if (viewerId && viewerId !== id) {
+    const isAlly = await interactionModel.isAllies(viewerId, id);
+    if (!isAlly) {
+      return {
+        ...profile,
+        full_name: 'Anonymous Peer',
+        username: 'anonymous',
+        avatar_url: null,
+        bio: null,
+      };
+    }
+  }
+
   return profile;
 }
 
@@ -84,11 +100,28 @@ export async function listProfiles(
     };
   });
 
+  // Mask real PII for any user who is not the viewer or an ally of the viewer
+  const allyList = viewerId ? await interactionModel.listAllies(viewerId, 500, 0).catch(() => []) : [];
+  const allyIds = new Set(allyList.map((a) => a.id));
+
+  const masked = enriched.map((item) => {
+    const isSelf = viewerId === item.id;
+    const isAlly = allyIds.has(item.id);
+    if (isSelf || isAlly) return item;
+    return {
+      ...item,
+      full_name: 'Anonymous Peer',
+      username: 'anonymous',
+      avatar_url: null,
+      bio: null,
+    };
+  });
+
   if (sortBy === 'match') {
-    enriched.sort((a, b) => (b.matchPercentage || 0) - (a.matchPercentage || 0));
+    masked.sort((a, b) => (b.matchPercentage || 0) - (a.matchPercentage || 0));
   } else if (sortBy === 'popular') {
     const withFollowers = await Promise.all(
-      enriched.map(async (item) => {
+      masked.map(async (item) => {
         const { followersCount } = await followModel.getCounts(item.id).catch(() => ({ followersCount: 0 }));
         return { ...item, followersCount };
       })
@@ -96,17 +129,32 @@ export async function listProfiles(
     withFollowers.sort((a, b) => (b.followersCount || 0) - (a.followersCount || 0));
     return withFollowers.slice(offset, offset + limit);
   } else if (sortBy === 'name') {
-    enriched.sort((a, b) => (a.full_name || a.username || '').localeCompare(b.full_name || b.username || ''));
+    masked.sort((a, b) => (a.full_name || a.username || '').localeCompare(b.full_name || b.username || ''));
   }
 
-  return enriched.slice(offset, offset + limit);
+  return masked.slice(offset, offset + limit);
 }
 
 /**
  * POST /profiles/batch
  */
-export async function getProfilesByIds(ids: string[]): Promise<ProfileRow[]> {
-  return profileModel.findByIds(ids);
+export async function getProfilesByIds(ids: string[], viewerId?: string): Promise<ProfileRow[]> {
+  const profiles = await profileModel.findByIds(ids);
+  if (!viewerId) return profiles;
+
+  const allyList = await interactionModel.listAllies(viewerId, 500, 0).catch(() => []);
+  const allyIds = new Set(allyList.map((a) => a.id));
+
+  return profiles.map((p) => {
+    if (p.id === viewerId || allyIds.has(p.id)) return p;
+    return {
+      ...p,
+      full_name: 'Anonymous Peer',
+      username: 'anonymous',
+      avatar_url: null,
+      bio: null,
+    };
+  });
 }
 
 /**

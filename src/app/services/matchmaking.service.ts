@@ -10,6 +10,9 @@
 import type { MatchIdentityView, MatchRow, MatchmakingStatus, QueueRow } from '../types/matchmaking.types';
 import { DAILY_MATCH_LIMIT } from '../types/matchmaking.types';
 import * as matchModel from '../models/matchmaking.model';
+import * as interactionModel from '../models/interaction.model';
+import * as conversationModel from '../models/conversation.model';
+import { upgradeConversationToAllied } from '../models/conversation.model';
 import { clearAllTimersForMatch, clearTimer, scheduleTimer } from '../utils/matchTimers';
 import { HttpError } from '../types/auth.types';
 import { pickTwoDistinctIdentities } from '../constants/anonymousIdentity';
@@ -323,12 +326,116 @@ export async function recomputeProgression(matchId: string): Promise<{ stage: nu
     emitToUser(match.user_b_id, 'matchmaking:stage_updated', payload);
   }
 
+  // Stage 4: Automatically become Allies when reaching Stage 4
+  if (stage >= 4 && !match.revealed_at) {
+    // Upgrade the conversation type to 'allied' — this is the DB-level
+    // signal that real profile data may now be shown to both members.
+    if (match.conversation_id) {
+      await upgradeConversationToAllied(match.conversation_id).catch((err) =>
+        console.error('[recomputeProgression] upgradeConversationToAllied failed:', err)
+      );
+    }
+
+    await matchModel.markRevealedIfMatched(match.user_a_id, match.user_b_id);
+    await interactionModel.createAllyRelationship(match.user_a_id, match.user_b_id);
+
+    const unlockPayload = { matchId, conversationId: match.conversation_id, stage: 4 };
+    emitToUser(match.user_a_id, 'matchmaking:allies_unlocked', unlockPayload);
+    emitToUser(match.user_b_id, 'matchmaking:allies_unlocked', unlockPayload);
+
+    await Promise.all([
+      interactionModel.createNotification({
+        userId: match.user_a_id,
+        type: 'accepted',
+        title: '🎉 Campus Allies Unlocked!',
+        description: 'You and your match completed the Ally Roadmap! Your identities have been revealed and you are now official Allies.',
+        fromUserId: match.user_b_id,
+        targetId: match.conversation_id,
+      }),
+      interactionModel.createNotification({
+        userId: match.user_b_id,
+        type: 'accepted',
+        title: '🎉 Campus Allies Unlocked!',
+        description: 'You and your match completed the Ally Roadmap! Your identities have been revealed and you are now official Allies.',
+        fromUserId: match.user_a_id,
+        targetId: match.conversation_id,
+      }),
+    ]).catch((err) => console.error('Error dispatching ally unlocked notification:', err));
+  }
+
   return { stage, dayStreak };
 }
 
 // ---------------------------------------------------------------------------
-// Reveal linkage
+// Reveal linkage & Direct Match Requests
 // ---------------------------------------------------------------------------
+
+/**
+ * Initiates an anonymous match between two users from a connect/match request.
+ * SECURITY: Always creates a FRESH anonymous conversation — never reuses any
+ * existing conversation, even if the users are already allies. This prevents
+ * history leaks and ensures every new relationship starts at Stage 1.
+ */
+export async function requestDirectMatch(
+  requesterId: string,
+  targetUserId: string,
+): Promise<{ conversationId: string; matchId: string | null; isAllies: boolean }> {
+  if (requesterId === targetUserId) {
+    throw new HttpError('Cannot connect with yourself', 400);
+  }
+
+  // Check if an active UNREVEALED match already exists between them.
+  // If so, resume that existing anonymous conversation (same match session).
+  // We never resume REVEALED/ALLIED conversations — those are a different state.
+  const existingMatch = await matchModel.findActiveMatchBetweenUsers(requesterId, targetUserId);
+  if (existingMatch && !existingMatch.revealed_at) {
+    const convId =
+      existingMatch.conversation_id ||
+      (await conversationModel.findActiveAnonymousConversationId(requesterId, targetUserId)) ||
+      (() => { throw new HttpError('Match exists but conversation is missing', 500); })();
+    return {
+      conversationId: convId!,
+      matchId: existingMatch.id,
+      isAllies: false,
+    };
+  }
+
+  // Whether they're strangers or existing allies, always start a FRESH
+  // anonymous conversation. No history carry-over, no identity shortcuts.
+  const isAllies = await interactionModel.isAllies(requesterId, targetUserId);
+
+  // Create brand-new anonymous conversation
+  const conversationId = await conversationModel.createConversation('anonymous');
+  await conversationModel.addMembers(conversationId, [requesterId, targetUserId]);
+
+  // Assign distinct anonymous identities
+  const [identityA, identityB] = pickTwoDistinctIdentities();
+
+  // Create direct match at Stage 1
+  const match = await matchModel.createDirectMatch({
+    userAId: requesterId,
+    userBId: targetUserId,
+    conversationId,
+    userAAlias: identityA.alias,
+    userAAvatar: identityA.avatar,
+    userBAlias: identityB.alias,
+    userBAvatar: identityB.avatar,
+  });
+
+  // Notify target user (anonymous notification — no real identity in payload)
+  await interactionModel
+    .createNotification({
+      userId: targetUserId,
+      type: 'friend_request',
+      title: 'New Anonymous Match!',
+      description: 'An anonymous peer wants to connect with you! Say hello in anonymous chat.',
+      fromUserId: requesterId,
+      targetId: conversationId,
+    })
+    .catch((err) => console.error('Error creating match notification:', err));
+
+  return { conversationId, matchId: match.id, isAllies };
+}
 
 /**
  * Called by interaction.service.ts#acceptConnection once two users

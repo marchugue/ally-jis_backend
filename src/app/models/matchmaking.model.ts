@@ -212,6 +212,55 @@ export async function assignIdentities(
 }
 
 /**
+ * Finds an unrevealed active match between two users if one exists.
+ */
+export async function findActiveMatchBetweenUsers(userIdA: string, userIdB: string): Promise<MatchRow | null> {
+  const { data, error } = await supabaseAdmin
+    .from('matches')
+    .select('*')
+    .or(
+      `and(user_a_id.eq.${userIdA},user_b_id.eq.${userIdB}),and(user_a_id.eq.${userIdB},user_b_id.eq.${userIdA})`,
+    )
+    .in('status', ['pending', 'chatting', 'confirmed'])
+    .is('revealed_at', null)
+    .maybeSingle();
+  if (error) throw error;
+  return data as MatchRow | null;
+}
+
+/**
+ * Creates an anonymous direct match at Stage 1 for two users who connected.
+ */
+export async function createDirectMatch(input: {
+  userAId: string;
+  userBId: string;
+  conversationId: string;
+  userAAlias: string;
+  userAAvatar: string;
+  userBAlias: string;
+  userBAvatar: string;
+}): Promise<MatchRow> {
+  const { data, error } = await supabaseAdmin
+    .from('matches')
+    .insert({
+      user_a_id: input.userAId,
+      user_b_id: input.userBId,
+      conversation_id: input.conversationId,
+      status: 'chatting',
+      current_stage: 1,
+      day_streak: 0,
+      user_a_alias: input.userAAlias,
+      user_a_avatar: input.userAAvatar,
+      user_b_alias: input.userBAlias,
+      user_b_avatar: input.userBAvatar,
+    })
+    .select('*')
+    .single();
+  if (error) throw error;
+  return data as MatchRow;
+}
+
+/**
  * Viewer-specific alias/avatar view for a match. Deliberately a narrow,
  * direct select (not routed through an RPC) so it works regardless of
  * what migrations/002_matchmaking.sql's functions return — those were

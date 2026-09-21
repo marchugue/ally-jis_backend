@@ -1,4 +1,4 @@
-// src/app/types/matchReveal.types.ts
+import type { StageCapabilities } from '../constants/progression';
 
 export interface ConversationInsights {
   totalMessages: number;
@@ -6,18 +6,16 @@ export interface ConversationInsights {
 }
 
 export interface RevealPartnerView {
-  // Stage 2+
+  // Stage 2+ (Non-identifying compatibility clues only)
   ageRange?: string | null;
   zodiacSign?: string | null;
   personalityType?: string | null;
   musicTaste?: string[];
   movieInterests?: string[];
   studyCategory?: string | null;
-  blurredAvatarUrl?: string | null;
   // Stage 3+
-  firstNameLetter?: string | null;
   favoriteHobby?: string | null;
-  // Stage 4 — the only point any of this becomes identifying
+  // Stage 4 — the only point any of this becomes identifying (Full Allies)
   fullName?: string | null;
   username?: string | null;
   bio?: string | null;
@@ -29,6 +27,7 @@ export interface RevealData {
   stage: number;
   stageName: string;
   dayStreak: number;
+  capabilities: StageCapabilities;
   // Stage 1+
   compatibilityScore: number | null;
   sharedInterests: string[];

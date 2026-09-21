@@ -23,11 +23,14 @@ export const uploadChatMedia = asyncHandler(async (req: Request, res: Response) 
     throw new HttpError('No file uploaded — expected multipart field "file"', 400);
   }
 
+  const conversationId = (req.body?.conversationId || req.query?.conversationId) as string | undefined;
+
   const result = await mediaService.uploadChatMedia({
     userId: req.userId as string,
     buffer: file.buffer,
     originalFilename: file.originalname,
     contentType: file.mimetype,
+    conversationId,
   });
 
   res.status(201).json(result);

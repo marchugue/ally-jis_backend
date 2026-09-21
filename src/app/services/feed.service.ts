@@ -2,7 +2,9 @@ import * as feedModel from '../models/feed.model';
 import * as profileModel from '../models/profile.model';
 import * as followModel from '../models/follow.model';
 import { HttpError } from '../types/auth.types';
+import { getDeterministicAnonymousAvatar } from '../constants/anonymousIdentity';
 import type {
+  AuthorSummary,
   CommentRow,
   CommentWithAuthor,
   FeedFilterOptions,
@@ -25,29 +27,57 @@ function clampLimit(limit?: number): number {
  * Attaches author profile info + "did the current viewer like this" flags
  * + ordered media to a batch of posts. Shared by listFeed / listPostsByAuthor
  * / getPostById / createPost so we only write the join-by-hand logic once.
+ *
+ * FULL ANONYMITY: If the author is not an ally of the viewer (and not the
+ * viewer themselves), all real identity attributes are masked as 'Anonymous Peer'
+ * with a deterministic animal avatar.
  */
 async function hydratePosts(viewerId: string, posts: PostRow[]): Promise<PostWithAuthor[]> {
   if (posts.length === 0) return [];
 
   const authorIds = [...new Set(posts.map((p) => p.author_id))];
   const postIds = posts.map((p) => p.id);
-  const [profileMap, likedIds, mediaMap, followingIds] = await Promise.all([
+  const [profileMap, likedIds, mediaMap, followingIds, connectionIds] = await Promise.all([
     feedModel.findProfilesByIds(authorIds),
     feedModel.findLikedPostIds(viewerId, postIds),
     feedModel.findMediaForPosts(postIds),
     followModel.getFollowingIds(viewerId),
+    feedModel.findAcceptedConnectionIds(viewerId),
   ]);
 
   return posts.map((post) => {
-    const author = profileMap.get(post.author_id);
+    const rawAuthor = profileMap.get(post.author_id);
+    const isOwn = viewerId === post.author_id;
+    const isAlly = isOwn || connectionIds.has(post.author_id);
+
+    let author: AuthorSummary | null = null;
+    if (rawAuthor) {
+      if (isAlly) {
+        author = {
+          ...rawAuthor,
+          is_following: isOwn ? false : followingIds.has(post.author_id),
+          is_ally: true,
+          avatarKey: null,
+        };
+      } else {
+        author = {
+          id: rawAuthor.id,
+          full_name: 'Anonymous Peer',
+          username: 'anonymous',
+          avatar_url: null,
+          avatarKey: getDeterministicAnonymousAvatar(rawAuthor.id),
+          department: null,
+          course: null,
+          interests: null,
+          is_following: false,
+          is_ally: false,
+        };
+      }
+    }
+
     return {
       ...post,
-      author: author
-        ? {
-            ...author,
-            is_following: viewerId === post.author_id ? false : followingIds.has(post.author_id),
-          }
-        : null,
+      author,
       liked_by_me: likedIds.has(post.id),
       media: mediaMap.get(post.id) ?? [],
     };
@@ -58,16 +88,43 @@ async function hydrateComments(viewerId: string, comments: CommentRow[]): Promis
   if (comments.length === 0) return [];
 
   const authorIds = [...new Set(comments.map((c) => c.author_id))];
-  const [profileMap, likedIds] = await Promise.all([
+  const [profileMap, likedIds, connectionIds] = await Promise.all([
     feedModel.findProfilesByIds(authorIds),
     feedModel.findLikedCommentIds(viewerId, comments.map((c) => c.id)),
+    feedModel.findAcceptedConnectionIds(viewerId),
   ]);
 
-  return comments.map((comment) => ({
-    ...comment,
-    author: profileMap.get(comment.author_id) ?? null,
-    liked_by_me: likedIds.has(comment.id),
-  }));
+  return comments.map((comment) => {
+    const rawAuthor = profileMap.get(comment.author_id);
+    const isOwn = viewerId === comment.author_id;
+    const isAlly = isOwn || connectionIds.has(comment.author_id);
+
+    let author: AuthorSummary | null = null;
+    if (rawAuthor) {
+      if (isAlly) {
+        author = {
+          ...rawAuthor,
+          is_ally: true,
+          avatarKey: null,
+        };
+      } else {
+        author = {
+          id: rawAuthor.id,
+          full_name: 'Anonymous Peer',
+          username: 'anonymous',
+          avatar_url: null,
+          avatarKey: getDeterministicAnonymousAvatar(rawAuthor.id),
+          is_ally: false,
+        };
+      }
+    }
+
+    return {
+      ...comment,
+      author,
+      liked_by_me: likedIds.has(comment.id),
+    };
+  });
 }
 
 /**
@@ -491,16 +548,24 @@ export async function createComment(
     parentCommentId = parent.id;
     parentAuthorId = parent.author_id;
 
-    // Secure backend hashtag mention for replies:
-    // If the comment doesn't already mention the parent author with hashtag, prefix it
-    const profileMap = await feedModel.findProfilesByIds([parent.author_id]);
-    const parentProfile = profileMap.get(parent.author_id);
-    const parentUsername = parentProfile?.username;
-    if (parentUsername) {
-      const mentionTag = `#${parentUsername}`;
-      if (!content.includes(mentionTag)) {
-        content = `${mentionTag} ${content}`;
+    // Secure backend mention for replies:
+    // Check if parent author is confirmed ally with authorId
+    const connectionIds = await feedModel.findAcceptedConnectionIds(authorId);
+    const isAlly = authorId === parent.author_id || connectionIds.has(parent.author_id);
+    let mentionTag = '@anonymous';
+    if (isAlly) {
+      const profileMap = await feedModel.findProfilesByIds([parent.author_id]);
+      const parentProfile = profileMap.get(parent.author_id);
+      const parentUsername = parentProfile?.username;
+      if (parentUsername) {
+        mentionTag = `@${parentUsername}`;
       }
+    }
+
+    // Normalize any leading # mention to @
+    content = content.replace(/^#([a-zA-Z0-9_-]+)/, '@$1');
+    if (!content.includes(mentionTag) && !content.startsWith('@')) {
+      content = `${mentionTag} ${content}`;
     }
   }
 
@@ -534,10 +599,12 @@ export async function createComment(
     });
   }
 
-  // 3. Scan comment for hashtag mentions: e.g. #username
-  const mentionMatches = content.match(/(?:^|\s)#([a-zA-Z0-9_]+)/g);
+  // 3. Scan comment for mentions: e.g. @username or legacy #username
+  const mentionMatches = content.match(/(?:^|\s)[@#]([a-zA-Z0-9_]+)/g);
   if (mentionMatches) {
-    const rawUsernames = mentionMatches.map((m) => m.trim().replace(/^#/, ''));
+    const rawUsernames = mentionMatches
+      .map((m) => m.trim().replace(/^[@#]/, ''))
+      .filter((u) => u.toLowerCase() !== 'anonymous');
     const uniqueUsernames = [...new Set(rawUsernames)];
     const mentionedProfiles = await feedModel.findProfilesByUsernames(uniqueUsernames);
 

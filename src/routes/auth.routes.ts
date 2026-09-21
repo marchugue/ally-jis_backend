@@ -84,6 +84,9 @@ router.post('/forgot-password', authController.forgotPassword);
 // POST /api/auth/reset-password
 router.post('/reset-password', authController.resetPassword);
 
+// GET /api/auth/password-reset/status/:trackingToken
+router.get('/password-reset/status/:trackingToken', authController.getPasswordResetStatus);
+
 // POST /api/auth/change-password — logged in only
 router.post('/change-password', authMiddleware, authController.changePassword);
 

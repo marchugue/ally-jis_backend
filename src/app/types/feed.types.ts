@@ -33,6 +33,8 @@ export interface AuthorSummary {
   course?: string | null;
   interests?: string[] | null;
   is_following?: boolean;
+  is_ally?: boolean;
+  avatarKey?: string | null;
 }
 
 // A row from post_media — one image, in display order.

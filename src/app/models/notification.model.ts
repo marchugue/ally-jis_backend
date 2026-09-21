@@ -109,3 +109,34 @@ export async function deleteAll(userId: string): Promise<void> {
 
   if (error) throw error;
 }
+
+/**
+ * Delete friend_request notification when confirmed or rejected
+ */
+export async function deleteFriendRequestNotification(userId: string, fromUserId: string): Promise<void> {
+  const { error } = await supabaseAdmin
+    .from('notifications')
+    .delete()
+    .eq('user_id', userId)
+    .eq('from_user_id', fromUserId)
+    .in('type', ['friend_request', 'connection_request']);
+
+  if (error) throw error;
+}
+
+/**
+ * Checks if a user has an active/pending friend_request notification from another user.
+ */
+export async function hasPendingFriendRequest(userId: string, fromUserId: string): Promise<boolean> {
+  const { data, error } = await supabaseAdmin
+    .from('notifications')
+    .select('id')
+    .eq('user_id', userId)
+    .eq('from_user_id', fromUserId)
+    .in('type', ['friend_request', 'connection_request'])
+    .limit(1);
+
+  if (error) throw error;
+  return (data?.length ?? 0) > 0;
+}
+

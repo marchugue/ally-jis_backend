@@ -18,7 +18,11 @@ export const env = {
   SUPABASE_SERVICE_ROLE_KEY: required('SUPABASE_SERVICE_ROLE_KEY'),
   DATABASE_URL: process.env.DATABASE_URL ?? '',
   PASSWORD_RESET_REDIRECT_URL:
-    process.env.PASSWORD_RESET_REDIRECT_URL ?? `${process.env.WEB_URL ?? 'http://localhost:5174'}/forgot-password`,
+    process.env.PASSWORD_RESET_REDIRECT_URL ?? `${process.env.WEB_URL ?? 'http://localhost:5174'}/reset-password`,
+  PASSWORD_RESET_EXPIRY_MINUTES: Number(process.env.PASSWORD_RESET_EXPIRY_MINUTES ?? 60),
+  /** Deep link opened in the device browser after a mobile-initiated reset completes on web. */
+  MOBILE_PASSWORD_RESET_SUCCESS_URL:
+    process.env.MOBILE_PASSWORD_RESET_SUCCESS_URL ?? 'ally://pages/password-reset-success',
   EMAIL_REDIRECT_URL:
     process.env.EMAIL_REDIRECT_URL ?? `${process.env.WEB_URL ?? 'http://localhost:5174'}/verify-email`,
   R2_ACCOUNT_ID: process.env.R2_ACCOUNT_ID ?? '',

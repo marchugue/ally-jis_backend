@@ -55,9 +55,18 @@ export async function uploadChatMedia(input: {
   buffer: Buffer;
   originalFilename: string;
   contentType: string;
+  conversationId?: string;
 }): Promise<MediaUploadResponse> {
   const normalizedContentType = normalizeContentType(input.contentType);
   validateChatFile(input.buffer, normalizedContentType);
+
+  if (input.conversationId) {
+    const { getMatchByConversationId } = await import('../models/matchmaking.model');
+    const match = await getMatchByConversationId(input.conversationId);
+    if (match && !match.revealed_at && match.current_stage < 3) {
+      throw new HttpError('Image and media sharing is locked until Stage 3 of the Ally Roadmap', 403);
+    }
+  }
 
   const url = await mediaModel.uploadChatMedia({
     ...input,

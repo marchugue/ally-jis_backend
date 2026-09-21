@@ -20,3 +20,8 @@ export function attachSocketServer(server: SocketIOServer): void {
 export function emitToUser(userId: string, event: string, payload: unknown): void {
   io?.to(`user:${userId}`).emit(event, payload);
 }
+
+/** Password-reset watch room — clients join with tracking token (no login required). */
+export function emitToPasswordResetTracking(trackingToken: string, event: string, payload: unknown): void {
+  io?.to(`password_reset:${trackingToken}`).emit(event, payload);
+}

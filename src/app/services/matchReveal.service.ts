@@ -10,7 +10,7 @@ import * as profileModel from '../models/profile.model';
 import * as lookupModel from '../models/lookup.model';
 import * as feedModel from '../models/feed.model';
 import { HttpError } from '../types/auth.types';
-import { stageName } from '../constants/progression';
+import { getStageCapabilities, stageName } from '../constants/progression';
 import type { RevealData, RevealPartnerView, TimelineData, TimelinePostView } from '../types/matchReveal.types';
 
 async function getParticipantMatch(matchId: string, userId: string) {
@@ -40,12 +40,14 @@ export async function getReveal(matchId: string, userId: string): Promise<Reveal
   const match = await getParticipantMatch(matchId, userId);
   const partnerId = match.user_a_id === userId ? match.user_b_id : match.user_a_id;
   const stage = match.current_stage;
+  const capabilities = getStageCapabilities(stage);
 
   if (stage < 1) {
     return {
       stage,
       stageName: stageName(stage),
       dayStreak: match.day_streak,
+      capabilities,
       compatibilityScore: null,
       sharedInterests: [],
       sharedCategories: [],
@@ -75,6 +77,7 @@ export async function getReveal(matchId: string, userId: string): Promise<Reveal
 
   const partnerView: RevealPartnerView = {};
 
+  // Stage 2: Non-identifying compatibility clues
   if (stage >= 2) {
     partnerView.ageRange = partner?.age_range ?? null;
     partnerView.zodiacSign = partner?.zodiac_sign ?? null;
@@ -82,15 +85,14 @@ export async function getReveal(matchId: string, userId: string): Promise<Reveal
     partnerView.musicTaste = partner?.music_taste ?? [];
     partnerView.movieInterests = partner?.movie_interests ?? [];
     partnerView.studyCategory = partner?.department ?? null;
-    partnerView.blurredAvatarUrl = partner?.avatar_url ?? null;
   }
 
+  // Stage 3: Mutual interests/hobbies
   if (stage >= 3) {
-    const nameSource = partner?.full_name || partner?.username || '';
-    partnerView.firstNameLetter = nameSource ? nameSource[0].toUpperCase() : null;
     partnerView.favoriteHobby = partner?.interests?.[0] ?? null;
   }
 
+  // Stage 4: Full Ally Reveal — the ONLY point real identity is disclosed
   if (stage >= 4) {
     partnerView.fullName = partner?.full_name ?? null;
     partnerView.username = partner?.username ?? null;
@@ -103,6 +105,7 @@ export async function getReveal(matchId: string, userId: string): Promise<Reveal
     stage,
     stageName: stageName(stage),
     dayStreak: match.day_streak,
+    capabilities,
     compatibilityScore: match.compatibility_score,
     sharedInterests,
     sharedCategories,
@@ -117,7 +120,9 @@ export async function getTimeline(matchId: string, userId: string): Promise<Time
   const partnerId = match.user_a_id === userId ? match.user_b_id : match.user_a_id;
   const stage = match.current_stage;
 
-  if (stage < 3) {
+  // Timeline posts can contain personal photos and identifying captions.
+  // Lock timeline completely until Stage 4 (Campus Allies).
+  if (stage < 4) {
     return { locked: true, blurred: false, posts: [] };
   }
 
@@ -135,5 +140,5 @@ export async function getTimeline(matchId: string, userId: string): Promise<Time
     createdAt: p.created_at,
   }));
 
-  return { locked: false, blurred: stage === 3, posts: postViews };
+  return { locked: false, blurred: false, posts: postViews };
 }

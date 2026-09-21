@@ -15,6 +15,9 @@ import * as otpService from './otp.service';
 import * as otpModel from '../models/otp.model';
 import { supabaseAdmin } from '../../config/supabase';
 import { uploadToR2Storage } from '../../config/r2';
+import * as passwordResetService from './passwordReset.service';
+import type { PasswordResetSource } from '../models/passwordReset.model';
+import { validatePassword } from '../utils/password.validator';
 
 /**
  * Wraps a Supabase user + session + profile into the AuthSession shape
@@ -205,6 +208,11 @@ export async function changePassword(input: { userId: string; accessToken: strin
     throw new HttpError('Current password is incorrect', 401);
   }
 
+  const passwordError = validatePassword(newPassword);
+  if (passwordError) {
+    throw new HttpError(passwordError, 400);
+  }
+
   await authModel.resetPasswordWithToken(accessToken, newPassword);
 }
 
@@ -232,27 +240,22 @@ export async function getSession(accessToken: string): Promise<AuthSession> {
  * enumerate registered emails. Supabase silently no-ops if the address
  * isn't registered, so we just await it and swallow that case too.
  */
-export async function forgotPassword(email: string, redirectTo: string): Promise<void> {
-  try {
-    await authModel.sendPasswordResetEmail(email, redirectTo);
-  } catch {
-    // Intentionally swallowed — see comment above. Real delivery failures
-    // (bad SMTP config, etc.) are logged by Supabase on their end; we
-    // don't want this endpoint's response to leak which emails exist.
-  }
+export async function forgotPassword(
+  email: string,
+  source: PasswordResetSource = 'web'
+): Promise<{ trackingToken: string }> {
+  return passwordResetService.requestPasswordReset(email, source);
 }
 
 /**
- * POST /auth/reset-password
- * accessToken here is the recovery token from the emailed reset link
- * (passed by the frontend as a query/hash param on its reset-password page).
+ * POST /auth/reset-password — raw token from the Resend email link (?token=…).
  */
-export async function resetPassword(accessToken: string, newPassword: string): Promise<void> {
-  try {
-    await authModel.resetPasswordWithToken(accessToken, newPassword);
-  } catch {
-    throw new HttpError('Reset link is invalid or has expired', 400);
-  }
+export async function resetPassword(rawToken: string, newPassword: string) {
+  return passwordResetService.completePasswordReset(rawToken, newPassword);
+}
+
+export async function getPasswordResetStatus(trackingToken: string) {
+  return passwordResetService.getPasswordResetStatus(trackingToken);
 }
 
 export async function isEmailVerified(id: string): Promise<EmailStatus> {

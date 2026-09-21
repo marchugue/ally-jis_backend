@@ -56,6 +56,14 @@ export function initSockets(httpServer: HTTPServer): SocketIOServer {
           ? socket.handshake.headers.authorization.slice(7)
           : undefined);
 
+      const passwordResetTracking = socket.handshake.auth?.passwordResetTracking as string | undefined;
+
+      if (!token && passwordResetTracking) {
+        socket.data.passwordResetTracking = passwordResetTracking.trim();
+        next();
+        return;
+      }
+
       if (!token) {
         next(new Error('Missing access token'));
         return;
@@ -75,6 +83,12 @@ export function initSockets(httpServer: HTTPServer): SocketIOServer {
   });
 
   io.on('connection', (socket) => {
+    const resetTracking = socket.data.passwordResetTracking as string | undefined;
+    if (resetTracking) {
+      socket.join(`password_reset:${resetTracking}`);
+      return;
+    }
+
     const userId = socket.data.userId as string;
     // All real-time events (matchmaking lifecycle + conversation
     // messages/typing) are emitted to `user:<id>` rooms — see

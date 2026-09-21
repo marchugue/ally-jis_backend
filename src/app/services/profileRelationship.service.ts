@@ -9,6 +9,8 @@
 
 import * as followModel from '../models/follow.model';
 import * as interactionModel from '../models/interaction.model';
+import * as matchModel from '../models/matchmaking.model';
+import * as notificationModel from '../models/notification.model';
 import type { RelationshipStatus } from '../types/interaction.types';
 
 export interface ProfileRelationshipSummary {
@@ -76,9 +78,33 @@ export async function getRelationshipSummary(viewerId: string, targetId: string)
   ]);
 
   let allyStatus: RelationshipStatus = 'none';
-  if (myStatus === 'accepted' && theirStatus === 'accepted') allyStatus = 'allies';
-  else if (myStatus === 'pending') allyStatus = 'pending_outgoing';
-  else if (theirStatus === 'pending') allyStatus = 'pending_incoming';
+  if (myStatus === 'accepted' && theirStatus === 'accepted') {
+    allyStatus = 'allies';
+  } else if (myStatus === 'pending') {
+    allyStatus = 'pending_outgoing';
+  } else if (theirStatus === 'pending') {
+    allyStatus = 'pending_incoming';
+  } else {
+    const activeMatch = await matchModel.findActiveMatchBetweenUsers(viewerId, targetId).catch(() => null);
+    if (activeMatch) {
+      if (activeMatch.revealed_at) {
+        allyStatus = 'allies';
+      } else {
+        const [targetHasReq, userHasReq] = await Promise.all([
+          notificationModel.hasPendingFriendRequest(targetId, viewerId).catch(() => false),
+          notificationModel.hasPendingFriendRequest(viewerId, targetId).catch(() => false),
+        ]);
+
+        if (targetHasReq) {
+          allyStatus = 'pending_outgoing';
+        } else if (userHasReq) {
+          allyStatus = 'pending_incoming';
+        } else {
+          allyStatus = 'allies';
+        }
+      }
+    }
+  }
 
   return {
     allyStatus,

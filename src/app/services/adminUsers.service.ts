@@ -2,7 +2,7 @@
 
 import * as adminUsersModel from '../models/adminUsers.model';
 import * as adminModel from '../models/admin.model';
-import * as authModel from '../models/auth.model';
+import * as passwordResetService from './passwordReset.service';
 import * as profileModel from '../models/profile.model';
 import { HttpError } from '../types/auth.types';
 import { env } from '../../config/env';
@@ -64,13 +64,11 @@ export async function forceLogout(adminId: string, userId: string, ip?: string):
 }
 
 /** Sends a password-reset email rather than setting a password directly —
- * reuses the exact same flow a user would trigger themselves from the
- * login page (authModel.sendPasswordResetEmail), so there's one path for
- * "how does a password reset actually happen" in the whole codebase. */
+ * reuses the same Resend-based flow as self-service forgot-password. */
 export async function resetUserPassword(adminId: string, userId: string, ip?: string): Promise<void> {
   const user = await adminUsersModel.getUserDetail(userId);
   if (!user) throw new HttpError('User not found', 404);
-  await authModel.sendPasswordResetEmail(user.email, env.PASSWORD_RESET_REDIRECT_URL);
+  await passwordResetService.requestPasswordReset(user.email, 'web');
   await log(adminId, 'reset_user_password', userId, ip);
 }
 

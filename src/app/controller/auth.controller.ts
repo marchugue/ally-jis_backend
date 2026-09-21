@@ -65,16 +65,27 @@ export const session = asyncHandler(async (req: Request, res: Response) => {
 
 // POST /auth/forgot-password
 export const forgotPassword = asyncHandler(async (req: Request, res: Response) => {
-  const { email } = req.body as { email: string };
-  await authService.forgotPassword(email, env.PASSWORD_RESET_REDIRECT_URL);
-  res.status(204).send();
+  const { email, source } = req.body as { email: string; source?: 'web' | 'mobile' };
+  const result = await authService.forgotPassword(email, source === 'mobile' ? 'mobile' : 'web');
+  res.status(200).json(result);
 });
 
 // POST /auth/reset-password
 export const resetPassword = asyncHandler(async (req: Request, res: Response) => {
   const { token, password } = req.body as { token: string; password: string };
-  await authService.resetPassword(token, password);
-  res.status(204).send();
+  const result = await authService.resetPassword(token, password);
+  res.status(200).json({
+    source: result.source,
+    trackingToken: result.trackingToken,
+    mobileRedirectUrl: env.MOBILE_PASSWORD_RESET_SUCCESS_URL,
+  });
+});
+
+// GET /auth/password-reset/status/:trackingToken
+export const getPasswordResetStatus = asyncHandler(async (req: Request, res: Response) => {
+  const { trackingToken } = req.params as { trackingToken: string };
+  const status = await authService.getPasswordResetStatus(trackingToken);
+  res.status(200).json(status);
 });
 
 // POST /auth/change-password — logged in, requires current password

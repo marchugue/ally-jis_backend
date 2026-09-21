@@ -34,3 +34,13 @@ export function pickTwoDistinctIdentities(): [AnonymousIdentity, AnonymousIdenti
 
   return [ANONYMOUS_IDENTITY_POOL[a], ANONYMOUS_IDENTITY_POOL[b]];
 }
+
+/** Deterministically maps any userId to an anonymous animal avatar key */
+export function getDeterministicAnonymousAvatar(userId: string): string {
+  if (!userId) return 'fox';
+  let hash = 0;
+  for (let i = 0; i < userId.length; i++) {
+    hash = (hash * 31 + userId.charCodeAt(i)) >>> 0;
+  }
+  return ANONYMOUS_IDENTITY_POOL[hash % ANONYMOUS_IDENTITY_POOL.length].avatar;
+}
