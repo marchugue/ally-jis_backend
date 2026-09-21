@@ -54,6 +54,9 @@ export const authMiddleware = asyncHandler(async (req: Request, res: Response, n
     // ── Onboarding gate — all students must complete onboarding before feature access ──
     const isOnboardingComplete = Boolean(
       user.user_metadata?.onboarding_complete === true ||
+      user.user_metadata?.onboarding_complete === 'true' ||
+      Boolean(flags?.course && flags?.department && flags?.year_level) ||
+      Boolean(user.user_metadata?.course && user.user_metadata?.department && user.user_metadata?.year_level) ||
       (flags?.course && flags?.department && flags?.year_level && Array.isArray(flags?.interests) && flags.interests.length >= 3)
     );
 

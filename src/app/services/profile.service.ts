@@ -182,7 +182,7 @@ export async function updateProfile(id: string, payload: UpdateProfilePayload): 
   const updated = await profileModel.updateById(id, payload);
 
   // If the profile now meets all onboarding criteria, sync onboarding_complete: true to auth metadata
-  if (updated.course && updated.department && updated.year_level && Array.isArray(updated.interests) && updated.interests.length >= 3) {
+  if (updated.course && updated.department && updated.year_level) {
     try {
       const { supabaseAdmin } = await import('../../config/supabase');
       const { data: userRes } = await supabaseAdmin.auth.admin.getUserById(id);

@@ -227,7 +227,12 @@ export async function findProfileById(id: string): Promise<ProfileRow | null> {
 export async function deleteAuthUser(id: string): Promise<void> {
   // 1. Clean up child records in public schema to prevent FK cascade blockages
   try {
+    await supabaseAdmin.from('password_reset_tokens').delete().eq('user_id', id);
     await supabaseAdmin.from('email_otps').delete().eq('user_id', id);
+    await supabaseAdmin.from('matchmaking_queue').delete().eq('user_id', id);
+    await supabaseAdmin.from('matches').delete().or(`user_a_id.eq.${id},user_b_id.eq.${id}`);
+    await supabaseAdmin.from('conversation_streak_restores').delete().eq('restored_by', id);
+    await supabaseAdmin.from('conversation_daily_activity').delete().eq('user_id', id);
     await supabaseAdmin.from('notifications').delete().or(`user_id.eq.${id},from_user_id.eq.${id}`);
     await supabaseAdmin.from('comment_likes').delete().eq('user_id', id);
     await supabaseAdmin.from('post_likes').delete().eq('user_id', id);
@@ -236,10 +241,12 @@ export async function deleteAuthUser(id: string): Promise<void> {
     await supabaseAdmin.from('follows').delete().or(`follower_id.eq.${id},followed_id.eq.${id}`);
     await supabaseAdmin.from('blocks').delete().or(`blocker_id.eq.${id},blocked_id.eq.${id}`);
     await supabaseAdmin.from('deleted_messages_user').delete().eq('user_id', id);
+    await supabaseAdmin.from('message_deletions').delete().eq('user_id', id);
     await supabaseAdmin.from('message_reactions').delete().eq('user_id', id);
     await supabaseAdmin.from('user_interactions').delete().or(`user_id.eq.${id},target_user_id.eq.${id}`);
     await supabaseAdmin.from('conversation_members').delete().eq('user_id', id);
     await supabaseAdmin.from('messages').delete().eq('sender_id', id);
+    await supabaseAdmin.from('user_presence').delete().eq('user_id', id);
     await supabaseAdmin.from('profiles').delete().eq('id', id);
   } catch (cleanErr) {
     console.warn('Pre-delete cleanup warning:', cleanErr);

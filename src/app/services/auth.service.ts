@@ -38,36 +38,51 @@ function buildAuthSession(args: {
     user: {
       id: user.id,
       email: user.email ?? '',
-      user_metadata: profile
-        ? {
-            full_name: profile.full_name,
-            username: profile.username,
-            avatar_url: profile.avatar_url,
-            // Verification gate fields — read by ProtectedRoute / _layout.tsx
-            email_type: profile.email_type ?? null,
-            chmsu_auto_verified: profile.chmsu_auto_verified ?? false,
-            pending_student_verification: profile.pending_student_verification ?? false,
-            student_verification_status: profile.student_verification_status ?? null,
-            admin_verified: profile.admin_verified ?? false,
-            // Derived convenience flags — frontend uses these directly
-            // is_approved: true  → user can access the full app
-            // is_approved: false → external student still pending admin review
-            is_approved: !!(
-              (profile.email_type !== 'external') ||  // CHMSU & other types auto-pass
-              profile.chmsu_auto_verified ||
-              profile.admin_verified ||
-              profile.student_verification_status === 'approved'
-            ),
-            // Onboarding guard — true only after the user completes step 4 (profile saved with course, department, year_level, interests)
-            onboarding_complete: Boolean(
-              user.user_metadata?.onboarding_complete === true ||
-              (profile.course && profile.department && profile.year_level && profile.username && Array.isArray(profile.interests) && profile.interests.length >= 3)
-            ),
-          }
-        : {
-            ...user.user_metadata,
-            onboarding_complete: user.user_metadata?.onboarding_complete === true,
-          },
+      user_metadata: {
+        ...user.user_metadata,
+        ...(profile
+          ? {
+              full_name: profile.full_name ?? user.user_metadata?.full_name,
+              username: profile.username ?? user.user_metadata?.username,
+              avatar_url: profile.avatar_url ?? user.user_metadata?.avatar_url,
+              bio: profile.bio ?? user.user_metadata?.bio,
+              department: profile.department ?? user.user_metadata?.department,
+              course: profile.course ?? user.user_metadata?.course,
+              year_level: profile.year_level ?? user.user_metadata?.year_level,
+              interests: profile.interests ?? user.user_metadata?.interests ?? [],
+              organizations: profile.organizations ?? user.user_metadata?.organizations ?? [],
+              // Verification gate fields — read by ProtectedRoute / _layout.tsx
+              email_type: profile.email_type ?? user.user_metadata?.email_type ?? null,
+              chmsu_auto_verified: profile.chmsu_auto_verified ?? false,
+              pending_student_verification: profile.pending_student_verification ?? false,
+              student_verification_status: profile.student_verification_status ?? null,
+              admin_verified: profile.admin_verified ?? false,
+              // Derived convenience flags — frontend uses these directly
+              // is_approved: true  → user can access the full app
+              // is_approved: false → external student still pending admin review
+              is_approved: !!(
+                (profile.email_type !== 'external') ||  // CHMSU & other types auto-pass
+                profile.chmsu_auto_verified ||
+                profile.admin_verified ||
+                profile.student_verification_status === 'approved'
+              ),
+              // Onboarding guard — true if flagged or if academic metadata exists
+              onboarding_complete: Boolean(
+                user.user_metadata?.onboarding_complete === true ||
+                user.user_metadata?.onboarding_complete === 'true' ||
+                (profile.course && profile.department && profile.year_level) ||
+                (user.user_metadata?.course && user.user_metadata?.department && user.user_metadata?.year_level) ||
+                (profile.course && profile.department && profile.year_level && profile.username && Array.isArray(profile.interests) && profile.interests.length >= 3)
+              ),
+            }
+          : {
+              onboarding_complete: Boolean(
+                user.user_metadata?.onboarding_complete === true ||
+                user.user_metadata?.onboarding_complete === 'true' ||
+                (user.user_metadata?.course && user.user_metadata?.department && user.user_metadata?.year_level)
+              ),
+            }),
+      },
       app_metadata: user.app_metadata,
       aud: user.aud,
       created_at: user.created_at,
