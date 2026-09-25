@@ -45,6 +45,31 @@ export async function findByUser(userId: string, limit: number): Promise<Notific
 }
 
 /**
+ * Find single notification by ID
+ */
+export async function findById(id: string): Promise<NotificationRow | null> {
+  const { data, error } = await supabaseAdmin
+    .from('notifications')
+    .select(NOTIFICATION_COLUMNS)
+    .eq('id', id)
+    .maybeSingle();
+
+  if (error) {
+    if (isMissingColumnError(error)) {
+      const fallback = await supabaseAdmin
+        .from('notifications')
+        .select(NOTIFICATION_COLUMNS_FALLBACK)
+        .eq('id', id)
+        .maybeSingle();
+      if (fallback.error) throw fallback.error;
+      return (fallback.data as NotificationRow | null) ?? null;
+    }
+    throw error;
+  }
+  return (data as NotificationRow | null) ?? null;
+}
+
+/**
  * GET /notifications/friend-requests
  */
 export async function findFriendRequests(userId: string): Promise<NotificationRow[]> {

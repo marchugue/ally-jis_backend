@@ -70,6 +70,9 @@ router.patch('/read-all', notificationController.markAllRead);
 // GET /api/notifications?limit=20
 router.get('/', notificationController.list);
 
+// GET /api/notifications/:id/redirection
+router.get('/:id/redirection', notificationController.getRedirection);
+
 // PATCH /api/notifications/:id/read
 router.patch('/:id/read', notificationController.markRead);
 

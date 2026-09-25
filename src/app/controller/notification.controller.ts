@@ -22,6 +22,13 @@ export const friendRequests = asyncHandler(async (req: Request, res: Response) =
   res.status(200).json(notifications);
 });
 
+// GET /notifications/:id/redirection
+export const getRedirection = asyncHandler(async (req: Request, res: Response) => {
+  const id = String(req.params.id);
+  const redirection = await notificationService.resolveNotificationRedirection(id, req.userId as string);
+  res.status(200).json(redirection);
+});
+
 // PATCH /notifications/:id/read
 export const markRead = asyncHandler(async (req: Request, res: Response) => {
   const id = String(req.params.id);

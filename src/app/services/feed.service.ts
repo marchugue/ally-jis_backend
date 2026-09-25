@@ -435,15 +435,20 @@ export async function likePost(userId: string, postId: string): Promise<LikeStat
   await feedModel.likePost(postId, userId);
 
   if (post.author_id !== userId) {
-    const postPreview = post.content?.trim().slice(0, 80) ?? '';
-    await feedModel.createNotification({
-      userId: post.author_id,
-      type: 'post_like',
-      title: 'New like on your post',
-      description: postPreview,
-      fromUserId: userId,
-      postId,
-    });
+    try {
+      const postPreview = post.content?.trim().slice(0, 80) ?? '';
+      const meta = JSON.stringify({ postId, parentId: null, childId: null });
+      await feedModel.createNotification({
+        userId: post.author_id,
+        type: 'post_like',
+        title: 'New like on your post',
+        description: `<!--meta:${meta}-->${postPreview}`,
+        fromUserId: userId,
+        postId,
+      });
+    } catch (err) {
+      console.error('[likePost] Notification creation failed:', err);
+    }
   }
 
   const likesCount = await feedModel.getPostLikesCount(postId);
@@ -575,55 +580,69 @@ export async function createComment(
 
   // 1. Notify the post author (unless commenting on your own post).
   if (post.author_id !== authorId) {
-    await feedModel.createNotification({
-      userId: post.author_id,
-      type: 'post_comment',
-      title: 'New comment on your post',
-      description: contentPreview,
-      fromUserId: authorId,
-      postId,
-    });
+    try {
+      const meta = JSON.stringify({ postId, commentId: comment.id, parentId: null, childId: comment.id });
+      await feedModel.createNotification({
+        userId: post.author_id,
+        type: 'post_comment',
+        title: 'New comment on your post',
+        description: `<!--meta:${meta}-->${contentPreview}`,
+        fromUserId: authorId,
+        postId,
+        commentId: comment.id,
+      });
+    } catch (err) {
+      console.error('[createComment] Post author notification failed:', err);
+    }
   }
 
   // 2. Replies also notify the parent comment's author.
-  //    Store commentId = parentCommentId so the recipient can deep-link into reply mode.
   if (parentCommentId && parentAuthorId && parentAuthorId !== authorId) {
-    await feedModel.createNotification({
-      userId: parentAuthorId,
-      type: 'comment_reply',
-      title: 'New reply to your comment',
-      description: contentPreview,
-      fromUserId: authorId,
-      postId,
-      commentId: parentCommentId,
-    });
+    try {
+      const meta = JSON.stringify({ postId, commentId: comment.id, parentId: parentCommentId, childId: comment.id });
+      await feedModel.createNotification({
+        userId: parentAuthorId,
+        type: 'comment_reply',
+        title: 'New reply to your comment',
+        description: `<!--meta:${meta}-->${contentPreview}`,
+        fromUserId: authorId,
+        postId,
+        commentId: comment.id,
+      });
+    } catch (err) {
+      console.error('[createComment] Parent comment author notification failed:', err);
+    }
   }
 
   // 3. Scan comment for mentions: e.g. @username or legacy #username
   const mentionMatches = content.match(/(?:^|\s)[@#]([a-zA-Z0-9_]+)/g);
   if (mentionMatches) {
-    const rawUsernames = mentionMatches
-      .map((m) => m.trim().replace(/^[@#]/, ''))
-      .filter((u) => u.toLowerCase() !== 'anonymous');
-    const uniqueUsernames = [...new Set(rawUsernames)];
-    const mentionedProfiles = await feedModel.findProfilesByUsernames(uniqueUsernames);
+    try {
+      const rawUsernames = mentionMatches
+        .map((m) => m.trim().replace(/^[@#]/, ''))
+        .filter((u) => u.toLowerCase() !== 'anonymous');
+      const uniqueUsernames = [...new Set(rawUsernames)];
+      const mentionedProfiles = await feedModel.findProfilesByUsernames(uniqueUsernames);
 
-    const alreadyNotified = new Set<string>([authorId]);
-    if (post.author_id !== authorId) alreadyNotified.add(post.author_id);
-    if (parentAuthorId && parentAuthorId !== authorId) alreadyNotified.add(parentAuthorId);
+      const alreadyNotified = new Set<string>([authorId]);
+      if (post.author_id !== authorId) alreadyNotified.add(post.author_id);
+      if (parentAuthorId && parentAuthorId !== authorId) alreadyNotified.add(parentAuthorId);
 
-    for (const profile of mentionedProfiles) {
-      if (!alreadyNotified.has(profile.id)) {
-        alreadyNotified.add(profile.id);
-        await feedModel.createNotification({
-          userId: profile.id,
-          type: 'comment_mention',
-          title: 'Mentioned you in a comment',
-          description: contentPreview,
-          fromUserId: authorId,
-          postId,
-        });
+      for (const profile of mentionedProfiles) {
+        if (!alreadyNotified.has(profile.id)) {
+          alreadyNotified.add(profile.id);
+          await feedModel.createNotification({
+            userId: profile.id,
+            type: 'comment_mention',
+            title: 'Mentioned you in a comment',
+            description: contentPreview,
+            fromUserId: authorId,
+            postId,
+          });
+        }
       }
+    } catch (err) {
+      console.error('[createComment] Mention notification failed:', err);
     }
   }
 
@@ -697,16 +716,26 @@ export async function likeComment(userId: string, commentId: string): Promise<Li
   await feedModel.likeComment(commentId, userId);
 
   if (comment.author_id !== userId) {
-    const commentPreview = comment.content?.trim().slice(0, 120) ?? '';
-    await feedModel.createNotification({
-      userId: comment.author_id,
-      type: 'comment_like',
-      title: 'New like on your comment',
-      description: commentPreview,
-      fromUserId: userId,
-      postId: comment.post_id,
-      commentId,
-    });
+    try {
+      const commentPreview = comment.content?.trim().slice(0, 120) ?? '';
+      const meta = JSON.stringify({
+        postId: comment.post_id,
+        commentId,
+        parentId: comment.parent_comment_id || null,
+        childId: commentId,
+      });
+      await feedModel.createNotification({
+        userId: comment.author_id,
+        type: 'comment_like',
+        title: 'New like on your comment',
+        description: `<!--meta:${meta}-->${commentPreview}`,
+        fromUserId: userId,
+        postId: comment.post_id,
+        commentId,
+      });
+    } catch (err) {
+      console.error('[likeComment] Notification creation failed:', err);
+    }
   }
 
   const likesCount = await feedModel.getCommentLikesCount(commentId);

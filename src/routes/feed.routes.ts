@@ -16,11 +16,6 @@ import { authMiddleware } from '../app/middleware/auth.middleware';
 
 const router = Router();
 
-router.use((req, res, next) => {
-  console.log('✅ Auth passed, userId:', req.userId);
-  next();
-});
-
 router.use(authMiddleware);
 
 // GET /api/feed

@@ -8,17 +8,40 @@ export interface NotificationFromUser {
 export type NotificationEntityType =
   | 'post'
   | 'comment'
+  | 'reply'
   | 'conversation'
   | 'profile'
   | 'requests'
   | 'discover';
+
+export interface NotificationRedirectionTree {
+  postId: string | null;
+  parentId: string | null;
+  childId: string | null;
+  highlightId: string | null;
+}
 
 export interface NotificationRedirection {
   entityType: NotificationEntityType;
   targetId: string;
   route: string;
   params?: Record<string, string>;
-  webUrl?: string;
+  webUrl: string;
+  postId?: string | null;
+  parentId?: string | null;
+  childId?: string | null;
+  tree?: NotificationRedirectionTree;
+}
+
+export interface NotificationRedirectionResponse {
+  notificationId: string;
+  type: string;
+  entityType: NotificationEntityType;
+  targetId: string;
+  webUrl: string;
+  route: string;
+  params: Record<string, string>;
+  tree: NotificationRedirectionTree;
 }
 
 export interface NotificationRow {
@@ -32,6 +55,8 @@ export interface NotificationRow {
   target_id?: string | null;
   post_id?: string | null;
   comment_id?: string | null;
+  parent_id?: string | null;
+  child_id?: string | null;
   created_at: string;
   from_user?: NotificationFromUser | NotificationFromUser[] | null;
   redirection?: NotificationRedirection | null;

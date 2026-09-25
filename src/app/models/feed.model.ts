@@ -462,6 +462,8 @@ export async function getCommentLikesCount(commentId: string): Promise<number> {
 
 /**
  * Shared by like/comment notification flows in feed.service.ts.
+ * Non-blocking: notification failures are logged and never throw, preventing
+ * primary operations (like, comment, reply) from failing with 500.
  */
 export async function createNotification(input: {
   userId: string;
@@ -474,59 +476,58 @@ export async function createNotification(input: {
 }): Promise<void> {
   const { userId, type, title, description, fromUserId, postId, commentId } = input;
 
-  const row: Record<string, unknown> = {
+  const baseRow = {
     user_id: userId,
     type,
     title,
     description,
     from_user_id: fromUserId,
   };
-  if (postId) {
-    row['post_id'] = postId;
-    row['target_id'] = postId;
-  }
-  if (commentId) row['comment_id'] = commentId;
 
-  let { data, error } = await supabaseAdmin
-    .from('notifications')
-    .insert(row)
-    .select()
-    .maybeSingle();
+  const optionalCols: Record<string, unknown> = {};
+  if (postId) optionalCols['post_id'] = postId;
+  if (commentId) optionalCols['comment_id'] = commentId;
 
-  if (error) {
-    const isMissingCol =
-      error.code === 'PGRST204' ||
-      error.code === '42703' ||
-      Boolean(error.message?.includes('post_id') || error.message?.includes('comment_id'));
+  let insertedData: any = null;
+  let insertError: any = null;
 
-    if (isMissingCol && (row['post_id'] || row['comment_id'])) {
-      delete row['post_id'];
-      delete row['comment_id'];
-      const retry = await supabaseAdmin
-        .from('notifications')
-        .insert(row)
-        .select()
-        .maybeSingle();
-      data = retry.data;
-      error = retry.error;
-    }
+  if (Object.keys(optionalCols).length > 0) {
+    const res = await supabaseAdmin
+      .from('notifications')
+      .insert({ ...baseRow, ...optionalCols })
+      .select()
+      .maybeSingle();
+    insertedData = res.data;
+    insertError = res.error;
   }
 
-  if (error) throw error;
+  // If initial insert with optional columns was skipped or failed due to missing columns/schema cache
+  if (!insertedData && (!Object.keys(optionalCols).length || insertError)) {
+    const fallbackRes = await supabaseAdmin
+      .from('notifications')
+      .insert(baseRow)
+      .select()
+      .maybeSingle();
+    insertedData = fallbackRes.data;
+    insertError = fallbackRes.error;
+  }
+
+  if (insertError) {
+    console.error('[createNotification] Failed to insert notification in DB:', insertError);
+  }
 
   try {
     emitToUser(
       userId,
       'notification:new',
-      data || {
-        user_id: userId, type, title, description,
-        from_user_id: fromUserId,
+      insertedData || {
+        ...baseRow,
         post_id: postId ?? null,
         comment_id: commentId ?? null,
         created_at: new Date().toISOString(),
       }
     );
-  } catch {
-    // Non-blocking socket emission
+  } catch (err) {
+    console.error('[createNotification] Failed to emit socket notification:', err);
   }
 }
