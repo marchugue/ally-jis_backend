@@ -114,17 +114,30 @@ interface SendPasswordResetEmailOptions {
   to: string;
   resetLink: string;
   expiresInMinutes: number;
+  otpCode?: string;
 }
 
 /**
- * Sends the password reset email with a link to the web reset page (Resend, not Supabase Auth).
+ * Sends the password reset email with a link to the web reset page (Resend, not Supabase Auth)
+ * and an optional 6-digit verification code.
  */
 export async function sendPasswordResetEmail({
   to,
   resetLink,
   expiresInMinutes,
+  otpCode,
 }: SendPasswordResetEmailOptions): Promise<void> {
   const subject = 'Reset your Ally-jis password';
+
+  const otpBoxHtml = otpCode
+    ? `
+              <!-- OTP Code Box -->
+              <div style="background:#F0FDF4;border:2px solid #BBF7D0;border-radius:16px;padding:24px;text-align:center;margin-bottom:24px;">
+                <p style="margin:0 0 6px;font-size:12px;font-weight:700;color:#1A6B3C;letter-spacing:2px;text-transform:uppercase;">Your reset verification code</p>
+                <div style="font-size:44px;font-weight:900;letter-spacing:10px;color:#1A6B3C;font-family:'Courier New',monospace;">${otpCode}</div>
+                <p style="margin:8px 0 0;font-size:12px;color:#6B7280;">Enter this 6-digit code in the app to reset your password</p>
+              </div>`
+    : '';
 
   const html = `
 <!DOCTYPE html>
@@ -157,11 +170,12 @@ export async function sendPasswordResetEmail({
           <tr>
             <td style="padding:40px 40px 32px;">
               <h1 style="margin:0 0 8px;font-size:24px;font-weight:800;color:#111827;letter-spacing:-0.5px;">Reset your password</h1>
-              <p style="margin:0 0 28px;font-size:15px;color:#6B7280;line-height:1.5;">
-                We received a request to reset your Ally-jis password. Tap the button below to choose a new password. This link expires in <strong>${expiresInMinutes} minutes</strong>.
+              <p style="margin:0 0 24px;font-size:15px;color:#6B7280;line-height:1.5;">
+                We received a request to reset your Ally-jis password. Enter the code below or tap the button to choose a new password. This link and code expire in <strong>${expiresInMinutes} minutes</strong>.
               </p>
+              ${otpBoxHtml}
               <div style="text-align:center;margin-bottom:28px;">
-                <a href="${resetLink}" style="display:inline-block;background:#1A6B3C;color:#ffffff;font-size:15px;font-weight:700;text-decoration:none;padding:16px 32px;border-radius:999px;">Reset password</a>
+                <a href="${resetLink}" style="display:inline-block;background:#1A6B3C;color:#ffffff;font-size:15px;font-weight:700;text-decoration:none;padding:16px 32px;border-radius:999px;">Reset password via link</a>
               </div>
               <p style="margin:0 0 12px;font-size:13px;color:#9CA3AF;line-height:1.5;word-break:break-all;">
                 Or copy this link into your browser:<br/>
@@ -189,6 +203,7 @@ export async function sendPasswordResetEmail({
     console.log(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
     console.log(`📧  PASSWORD RESET EMAIL (dev — no RESEND_API_KEY)`);
     console.log(`   To:   ${to}`);
+    if (otpCode) console.log(`   OTP:  ${otpCode}`);
     console.log(`   Link: ${resetLink}`);
     console.log(`   Exp:  ${expiresInMinutes} minutes`);
     console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);

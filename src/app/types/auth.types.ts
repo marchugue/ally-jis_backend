@@ -75,12 +75,26 @@ export interface OtpStatus {
   resendCount: number;
   resendLimit: number;
   expiresAt: string | null;
+  /** Remaining resend attempts before the limit is hit */
+  resendAttemptsLeft: number;
+  /** Number of failed verification attempts (for brute-force feedback) */
+  verifyAttempts: number;
+  /** True if OTP has expired (expiresAt < now) */
+  isExpired: boolean;
+  /** Resend cooldown seconds remaining (0 = can resend now) */
+  resendCooldownSeconds: number;
 }
 
 export interface RegisterResponse {
   userId: string;
   email: string;
   accessToken: string;
+  /** True when the response resumes an existing pending verification instead of creating a new account */
+  resumePending?: boolean;
+  /** OTP expiry ISO timestamp — forwarded to the client so it can start the countdown immediately */
+  otpExpiresAt?: string | null;
+  /** Resend cooldown seconds remaining (forwarded so client can render the button state correctly) */
+  resendCooldownSeconds?: number;
 }
 
 // Custom error type used across services/models so the error middleware

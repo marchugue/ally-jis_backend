@@ -698,6 +698,21 @@ export async function deleteMessageForEveryone(
   }
 
   await conversationModel.tombstoneMessage(messageId);
+
+  // Broadcast to all participants (including sender for multi-tab sync) so their UI updates immediately
+  try {
+    const recipientIds = await conversationModel.findOtherMemberIds(conversationId, userId);
+    const allMembers = Array.from(new Set([...recipientIds, userId]));
+    for (const memberId of allMembers) {
+      emitToUser(memberId, 'conversation:message_deleted', {
+        conversationId,
+        messageId,
+        mode: 'delete_for_everyone',
+      });
+    }
+  } catch (err) {
+    console.warn('[deleteMessageForEveryone] broadcast warning:', err);
+  }
 }
 
 /**

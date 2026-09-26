@@ -18,6 +18,7 @@ import { uploadToR2Storage } from '../../config/r2';
 import * as passwordResetService from './passwordReset.service';
 import type { PasswordResetSource } from '../models/passwordReset.model';
 import { validatePassword } from '../utils/password.validator';
+import { env } from '../../config/env';
 
 /**
  * Wraps a Supabase user + session + profile into the AuthSession shape
@@ -106,17 +107,60 @@ export async function register(payload: RegisterPayload): Promise<RegisterRespon
     throw new HttpError('New registrations are temporarily closed.', 503);
   }
 
-  // 1. Pre-check username uniqueness
-  const existing = await authModel.findProfileByUsername(username);
-  if (existing) {
-    throw new HttpError('Username already taken', 409);
+  // ────────────────────────────────────────────────────────────────────────
+  // 1. RESUME PENDING VERIFICATION
+  //    If the same email already has an active (non-expired, unverified) OTP
+  //    row we should NOT create a new account. Instead, resume the existing
+  //    session and return the user to the OTP screen.
+  //    This prevents duplicate pending registrations and ensures OTP progress
+  //    survives accidental page refreshes, app switches, or back navigation.
+  // ────────────────────────────────────────────────────────────────────────
+  const existingOtpForEmail = await otpModel.findOtpByEmail(email);
+  if (existingOtpForEmail && !existingOtpForEmail.verified_at) {
+    const otpExpired = new Date() > new Date(existingOtpForEmail.expires_at);
+    if (!otpExpired) {
+      // Active pending verification — resume it without touching the existing account.
+      console.log(`[authService.register] Resuming active pending verification for email "${email}" (userId: ${existingOtpForEmail.user_id})`);
+      const otpStatus = await otpService.getOtpStatus(existingOtpForEmail.user_id);
+      return {
+        userId: existingOtpForEmail.user_id,
+        email,
+        accessToken: '',
+        resumePending: true,
+        otpExpiresAt: existingOtpForEmail.expires_at,
+        resendCooldownSeconds: otpStatus.resendCooldownSeconds,
+      };
+    }
+    // Expired — purge the stale pending account and allow fresh registration
+    console.log(`[authService.register] Purging expired unverified registration for email "${email}" (userId: ${existingOtpForEmail.user_id})`);
+    await authModel.deleteAuthUser(existingOtpForEmail.user_id);
   }
 
-  // 2. Determine email type from domain if not provided
+  // 2. Pre-check username uniqueness — evict abandoned unverified registrations
+  const existing = await authModel.findProfileByUsername(username);
+  if (existing) {
+    const otpStatus = await otpService.getOtpStatus(existing.id);
+    if (otpStatus.exists && !otpStatus.verified && otpStatus.isExpired) {
+      // Expired pending registration blocking the username — safe to purge
+      console.log(`[authService.register] Purging expired unverified registration for username "${username}" (userId: ${existing.id})`);
+      await authModel.deleteAuthUser(existing.id);
+    } else if (otpStatus.exists && !otpStatus.verified && !otpStatus.isExpired) {
+      // Another user has a LIVE pending registration for this username.
+      // The username is temporarily reserved — inform the registrant.
+      throw new HttpError(
+        'This username is currently reserved by another pending registration. Please choose a different username or try again in a few minutes.',
+        409
+      );
+    } else {
+      throw new HttpError('Username is already taken. Please choose a different one.', 409);
+    }
+  }
+
+  // 3. Determine email type from domain if not provided
   const resolvedEmailType = email_type ?? (email.toLowerCase().endsWith('@chmsu.edu.ph') ? 'chmsu' : 'external');
   const isChmsuEmail = resolvedEmailType === 'chmsu';
 
-  // 3. Create auth user (Supabase immediately marks email_confirmed=true via admin API in the model)
+  // 4. Create auth user (Supabase immediately marks email_confirmed=false via admin API in the model)
   let authUser: SupabaseAuthUser;
   try {
     authUser = await authModel.createAuthUser({
@@ -126,12 +170,33 @@ export async function register(payload: RegisterPayload): Promise<RegisterRespon
     });
   } catch (error: any) {
     if (error?.message?.toLowerCase?.().includes('already registered')) {
-      throw new HttpError('Email already registered', 409);
+      // Check if existing auth user is unverified and can be purged
+      try {
+        const { data: userList } = await supabaseAdmin.auth.admin.listUsers();
+        const existingAuthUser = userList?.users?.find(
+          (u) => u.email?.toLowerCase().trim() === email.toLowerCase().trim()
+        );
+        if (existingAuthUser && !existingAuthUser.email_confirmed_at) {
+          console.log(`[authService.register] Purging unverified Supabase user "${email}" (userId: ${existingAuthUser.id})`);
+          await authModel.deleteAuthUser(existingAuthUser.id);
+          authUser = await authModel.createAuthUser({
+            email, password, username, bio, department, course, year_level,
+            interests, organizations, avatar_url, zodiac_sign, personality_type,
+            music_taste, movie_interests, age_range, match_gender_preference,
+          });
+        } else {
+          throw new HttpError('An account with this email already exists. Please log in or use a different email.', 409);
+        }
+      } catch (retryErr: any) {
+        if (retryErr instanceof HttpError) throw retryErr;
+        throw new HttpError('An account with this email already exists. Please log in or use a different email.', 409);
+      }
+    } else {
+      throw error;
     }
-    throw error;
   }
 
-  // 4. Set email_type, chmsu_auto_verified, and student_id fields on the profile
+  // 5. Set email_type, chmsu_auto_verified, and student_id fields on the profile
   const profileUpdate: Record<string, unknown> = {
     email_type: resolvedEmailType,
     chmsu_auto_verified: isChmsuEmail,
@@ -144,15 +209,21 @@ export async function register(payload: RegisterPayload): Promise<RegisterRespon
   }
   await supabaseAdmin.from('profiles').update(profileUpdate).eq('id', authUser.id);
 
-  // 5. Generate and send OTP — user must verify before they can log in
+  // 6. Generate and send OTP — user must verify before they can log in
   await otpService.generateAndSendOtp(authUser.id, email);
 
-  // 6. Return userId + email so the frontend can navigate to the OTP screen.
+  // Fetch the OTP row so we can return the expiry timestamp immediately
+  const newOtpRow = await otpModel.findOtpByEmail(email);
+
+  // 7. Return userId + email so the frontend can navigate to the OTP screen.
   //    No accessToken yet — the user is not logged in until OTP is verified.
   return {
     userId: authUser.id,
     email: authUser.email ?? email,
     accessToken: '',
+    resumePending: false,
+    otpExpiresAt: newOtpRow?.expires_at ?? null,
+    resendCooldownSeconds: Number(process.env.OTP_RESEND_COOLDOWN_SECONDS ?? 60),
   };
 }
 
@@ -176,6 +247,9 @@ export async function login(payload: LoginPayload): Promise<AuthSession> {
     err.requiresOtp = true;
     err.userId = data.user.id;
     err.email = data.user.email;
+    err.otpExpiresAt = otpStatus.expiresAt;
+    err.resendCooldownSeconds = otpStatus.resendCooldownSeconds;
+    err.resendAttemptsLeft = otpStatus.resendAttemptsLeft;
     throw err;
   }
 
@@ -262,11 +336,18 @@ export async function forgotPassword(
   return passwordResetService.requestPasswordReset(email, source);
 }
 
+export async function verifyPasswordResetOtp(email: string, code: string) {
+  return passwordResetService.verifyPasswordResetOtp(email, code);
+}
+
 /**
- * POST /auth/reset-password — raw token from the Resend email link (?token=…).
+ * POST /auth/reset-password — supports { email, code, newPassword } or { token, newPassword }.
  */
-export async function resetPassword(rawToken: string, newPassword: string) {
-  return passwordResetService.completePasswordReset(rawToken, newPassword);
+export async function resetPassword(
+  paramsOrToken: string | passwordResetService.CompletePasswordResetParams,
+  maybePassword?: string
+) {
+  return passwordResetService.completePasswordReset(paramsOrToken, maybePassword);
 }
 
 export async function getPasswordResetStatus(trackingToken: string) {
@@ -362,31 +443,114 @@ export async function deleteOwnAccount(userId: string): Promise<void> {
 
 /**
  * Cancels an in-progress registration by deleting the pending unverified account.
+ * Supports identifier as userId string or object with userId and/or email.
  *
- * Safety guard: only allows deletion if the user's OTP has NOT been verified yet.
+ * Safety guard: only allows deletion if the user's OTP has NOT been verified yet
+ * and the Supabase auth email is not confirmed.
  * This prevents the endpoint from being used to delete real, active accounts.
- *
- * Called when the user clicks "← Change email address" on the OTP screen —
- * rolls back the Supabase auth user, the profile row, and the OTP entry so
- * the user can restart with a clean slate (same or different username/email).
  */
-export async function cancelRegistration(userId: string): Promise<void> {
-  // Check OTP status — only allow cancel if NOT verified
-  const otpStatus = await otpService.getOtpStatus(userId);
+export async function cancelRegistration(
+  identifier: string | { userId?: string; email?: string }
+): Promise<void> {
+  let targetUserId = typeof identifier === 'string' ? identifier : identifier.userId;
+  const targetEmail = typeof identifier === 'object' ? identifier.email : undefined;
 
-  if (otpStatus.verified) {
-    // The user already verified their email — this is a real account.
-    // Refuse to delete it via this unauthenticated endpoint.
+  if (!targetUserId && targetEmail) {
+    const otpRow = await otpModel.findOtpByEmail(targetEmail);
+    if (otpRow) {
+      targetUserId = otpRow.user_id;
+    } else {
+      const { data: userList } = await supabaseAdmin.auth.admin.listUsers();
+      const match = userList?.users?.find(
+        (u) => u.email?.toLowerCase().trim() === targetEmail.toLowerCase().trim()
+      );
+      if (match) targetUserId = match.id;
+    }
+  }
+
+  if (!targetUserId) {
+    // Nothing to cancel or already cleaned
+    return;
+  }
+
+  // Check OTP status — only allow cancel if NOT verified
+  const otpStatus = await otpService.getOtpStatus(targetUserId);
+
+  if (otpStatus.exists && otpStatus.verified) {
     throw new HttpError('Account is already verified and cannot be cancelled via this endpoint.', 403);
+  }
+
+  // Also verify user is not confirmed in Supabase Auth
+  try {
+    const { data: userRes } = await supabaseAdmin.auth.admin.getUserById(targetUserId);
+    if (userRes?.user?.email_confirmed_at) {
+      throw new HttpError('Account is already verified and cannot be cancelled via this endpoint.', 403);
+    }
+  } catch (authErr: any) {
+    if (authErr instanceof HttpError) throw authErr;
   }
 
   // Safe to delete — account is pending/unverified
   try {
-    await authModel.deleteAuthUser(userId);
+    await authModel.deleteAuthUser(targetUserId);
+    console.log(`[cancelRegistration] Successfully rolled back unverified registration for userId: ${targetUserId}`);
   } catch (err: any) {
     throw new HttpError(err?.message || 'Failed to cancel registration', 500);
   }
 }
+
+/**
+ * Sweeps the database for unverified registrations where the OTP has expired
+ * (older than OTP_EXPIRY_MINUTES) and deletes the unverified auth users and profiles.
+ * This ensures abandoned registrations never permanently occupy space or block emails.
+ */
+export async function cleanupUnverifiedRegistrations(): Promise<number> {
+  try {
+    const thresholdDate = new Date(Date.now() - env.OTP_EXPIRY_MINUTES * 60 * 1000);
+    const expiredOtps = await otpModel.findExpiredUnverifiedOtps(thresholdDate);
+
+    let deletedCount = 0;
+    for (const row of expiredOtps) {
+      try {
+        const { data: userRes } = await supabaseAdmin.auth.admin.getUserById(row.user_id);
+        if (!userRes?.user?.email_confirmed_at) {
+          await authModel.deleteAuthUser(row.user_id);
+          deletedCount++;
+        }
+      } catch (userErr) {
+        console.warn(`[cleanupUnverifiedRegistrations] Error purging user ${row.user_id}:`, userErr);
+      }
+    }
+
+    if (deletedCount > 0) {
+      console.log(`[cleanupUnverifiedRegistrations] Purged ${deletedCount} abandoned unverified registration(s).`);
+    }
+    return deletedCount;
+  } catch (err) {
+    console.error('[cleanupUnverifiedRegistrations] Failed to run cleaner:', err);
+    return 0;
+  }
+}
+
+/**
+ * Initializes a background cleaner that runs periodically (every 10 minutes)
+ * to remove expired, unverified accounts.
+ */
+export function initUnverifiedRegistrationCleaner(): void {
+  // Run on startup after 5 seconds
+  setTimeout(() => {
+    cleanupUnverifiedRegistrations().catch((err) => console.error('Initial unverified cleaner failed:', err));
+  }, 5000);
+
+  // Run every 10 minutes
+  const interval = setInterval(() => {
+    cleanupUnverifiedRegistrations().catch((err) => console.error('Scheduled unverified cleaner failed:', err));
+  }, 10 * 60 * 1000);
+
+  // Ensure timer does not prevent process exit
+  if (interval.unref) interval.unref();
+}
+
 
 /**
  * Uploads a student ID photo to Cloudflare R2 (with Supabase Storage fallback)

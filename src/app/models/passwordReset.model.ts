@@ -31,6 +31,17 @@ export async function findProfileIdByEmail(email: string): Promise<string | null
   return (data as { id: string } | null)?.id ?? null;
 }
 
+export async function findPasswordResetByEmail(email: string): Promise<PasswordResetRow | null> {
+  const { data, error } = await supabaseAdmin
+    .from('password_reset_tokens')
+    .select('*')
+    .ilike('email', email.trim().toLowerCase())
+    .maybeSingle();
+
+  if (error) throw error;
+  return data as PasswordResetRow | null;
+}
+
 export async function upsertPasswordResetToken(input: {
   userId: string;
   email: string;

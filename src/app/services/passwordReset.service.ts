@@ -61,8 +61,9 @@ export async function requestPasswordReset(
     return { trackingToken: dummyTrackingToken() };
   }
 
-  const rawToken = generateToken();
-  const tokenHash = hashToken(rawToken);
+  const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
+  const rawToken = otpCode;
+  const tokenHash = hashToken(normalized + ':' + otpCode);
   const trackingToken = generateTrackingToken();
   const expiresAt = new Date(Date.now() + env.PASSWORD_RESET_EXPIRY_MINUTES * 60 * 1000);
 
@@ -83,13 +84,14 @@ export async function requestPasswordReset(
     );
   }
 
-  const resetLink = buildResetLink(rawToken);
+  const resetLink = `${buildResetLink(rawToken)}&email=${encodeURIComponent(normalized)}`;
 
   try {
     await sendPasswordResetEmail({
       to: normalized,
       resetLink,
       expiresInMinutes: env.PASSWORD_RESET_EXPIRY_MINUTES,
+      otpCode,
     });
   } catch (err) {
     console.error('[passwordReset] Failed to send email:', err);
@@ -103,30 +105,115 @@ export interface CompletePasswordResetResult {
   trackingToken: string;
 }
 
+export interface CompletePasswordResetParams {
+  rawToken?: string;
+  email?: string;
+  code?: string;
+  newPassword: string;
+}
+
 /**
- * POST /auth/reset-password — token is the raw token from the email link query param.
+ * POST /auth/password-reset/verify-otp — verifies 6-digit code for an email before setting new password.
+ */
+export async function verifyPasswordResetOtp(
+  email: string,
+  code: string
+): Promise<{ valid: boolean; trackingToken: string }> {
+  const normalized = email.trim().toLowerCase();
+  const cleaned = code.trim();
+  if (!normalized || !cleaned) {
+    throw new HttpError('Email and 6-digit code are required.', 400);
+  }
+
+  const row = await passwordResetModel.findPasswordResetByEmail(normalized);
+  if (!row) {
+    throw new HttpError('No pending password reset found for this email. Please request a new code.', 404);
+  }
+
+  if (row.used_at || row.reset_completed_at) {
+    throw new HttpError('This verification code has already been used.', 400);
+  }
+
+  if (new Date(row.expires_at).getTime() < Date.now()) {
+    throw new HttpError('This verification code has expired. Please request a new one.', 400);
+  }
+
+  const expectedHash = hashToken(normalized + ':' + cleaned);
+  const legacyHash = hashToken(cleaned);
+  if (row.token_hash !== expectedHash && row.token_hash !== legacyHash) {
+    throw new HttpError('Incorrect verification code. Please check and try again.', 400);
+  }
+
+  return { valid: true, trackingToken: row.tracking_token };
+}
+
+/**
+ * POST /auth/reset-password — handles both 6-digit OTP code + email and legacy raw token.
  */
 export async function completePasswordReset(
-  rawToken: string,
-  newPassword: string
+  paramsOrToken: string | CompletePasswordResetParams,
+  maybePassword?: string
 ): Promise<CompletePasswordResetResult> {
+  let rawToken: string | undefined;
+  let email: string | undefined;
+  let code: string | undefined;
+  let newPassword: string;
+
+  if (typeof paramsOrToken === 'string') {
+    rawToken = paramsOrToken;
+    newPassword = maybePassword || '';
+  } else {
+    rawToken = paramsOrToken.rawToken;
+    email = paramsOrToken.email;
+    code = paramsOrToken.code;
+    newPassword = paramsOrToken.newPassword;
+  }
+
   const passwordError = validatePassword(newPassword);
   if (passwordError) {
     throw new HttpError(passwordError, 400);
   }
 
-  const tokenHash = hashToken(rawToken.trim());
-  const row = await passwordResetModel.findPasswordResetByTokenHash(tokenHash);
+  let row: passwordResetModel.PasswordResetRow | null = null;
+
+  if (email && code) {
+    const normalized = email.trim().toLowerCase();
+    const cleaned = code.trim();
+    row = await passwordResetModel.findPasswordResetByEmail(normalized);
+    if (!row) {
+      throw new HttpError('No pending reset request found for this email.', 404);
+    }
+    const expectedHash = hashToken(normalized + ':' + cleaned);
+    const legacyHash = hashToken(cleaned);
+    if (row.token_hash !== expectedHash && row.token_hash !== legacyHash) {
+      throw new HttpError('Incorrect verification code. Please try again.', 400);
+    }
+  } else if (rawToken) {
+    const tokenHash = hashToken(rawToken.trim());
+    row = await passwordResetModel.findPasswordResetByTokenHash(tokenHash);
+    if (!row && email) {
+      const normalized = email.trim().toLowerCase();
+      const candidate = await passwordResetModel.findPasswordResetByEmail(normalized);
+      if (
+        candidate &&
+        (candidate.token_hash === hashToken(normalized + ':' + rawToken.trim()) ||
+          candidate.token_hash === hashToken(rawToken.trim()))
+      ) {
+        row = candidate;
+      }
+    }
+  }
+
   if (!row) {
-    throw new HttpError('Reset link is invalid or has expired', 400);
+    throw new HttpError('Reset link or code is invalid or has expired', 400);
   }
 
   if (row.used_at || row.reset_completed_at) {
-    throw new HttpError('This reset link has already been used', 400);
+    throw new HttpError('This reset link or code has already been used', 400);
   }
 
   if (new Date(row.expires_at).getTime() < Date.now()) {
-    throw new HttpError('Reset link is invalid or has expired', 400);
+    throw new HttpError('Reset link or code has expired. Please request a new one.', 400);
   }
 
   await authModel.updateUserPassword(row.user_id, newPassword);

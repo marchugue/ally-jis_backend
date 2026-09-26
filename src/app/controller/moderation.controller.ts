@@ -19,7 +19,23 @@ export const blockUser = asyncHandler(async (req: Request, res: Response) => {
 
 // POST /moderation/report
 export const reportUser = asyncHandler(async (req: Request, res: Response) => {
-  const payload = req.body as ReportUserPayload;
+  const body = (req.body ?? {}) as any;
+  const reportedUserId = (body.reportedUserId || body.targetUserId || '').trim();
+  const violationId = (body.violationId || body.reason || 'other').trim();
+
+  if (!reportedUserId) {
+    res.status(400).json({ error: 'reportedUserId is required' });
+    return;
+  }
+
+  const payload: ReportUserPayload = {
+    reportedUserId,
+    violationId,
+    conversationId: body.conversationId ?? null,
+    postId: body.postId ?? null,
+    notes: body.notes || body.details || null,
+  };
+
   const report = await moderationService.createReport(req.userId as string, payload);
   res.status(201).json(report);
 });

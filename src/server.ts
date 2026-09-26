@@ -5,6 +5,7 @@ import { initRedis, closeRedis } from './config/redis';
 import { initSockets } from './sockets';
 import { reconcileStaleMatches } from './app/services/matchmaking.service';
 import { initStreakReminderScheduler } from './app/services/streakReminder.service';
+import { initUnverifiedRegistrationCleaner } from './app/services/auth.service';
 
 process.on('uncaughtException', (err) => {
   console.error('uncaughtException:', err);
@@ -34,7 +35,11 @@ async function bootstrap() {
 
     // Initialize 10:00 PM PHT streak reminder scheduler
     initStreakReminderScheduler();
+
+    // Initialize periodic cleaner for stale/abandoned unverified registrations
+    initUnverifiedRegistrationCleaner();
   });
+
 
   server.on('error', (err) => {
     console.error('Server error:', err);

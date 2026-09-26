@@ -479,7 +479,7 @@ export async function tombstoneMessage(messageId: string): Promise<void> {
     .from('messages')
     .update({
       is_deleted: true,
-      content: null,
+      content: 'This message was deleted',
       image_url: null,
       deleted_at: new Date().toISOString(),
     })

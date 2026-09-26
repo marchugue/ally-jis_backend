@@ -16,6 +16,8 @@ export interface OtpRow {
   verified_at: string | null;
   created_at: string;
   updated_at: string;
+  /** Running count of consecutive failed verify attempts — reset on success or new OTP generation */
+  verify_attempts: number;
 }
 
 /**
@@ -30,8 +32,10 @@ export async function upsertOtp(input: {
   expiresAt: Date;
   resendCount?: number;
   lastResentAt?: Date | null;
+  /** Reset verify_attempts to 0 on each new OTP generation */
+  verifyAttempts?: number;
 }): Promise<OtpRow> {
-  const { userId, email, otpHash, expiresAt, resendCount = 0, lastResentAt = null } = input;
+  const { userId, email, otpHash, expiresAt, resendCount = 0, lastResentAt = null, verifyAttempts = 0 } = input;
 
   const { data, error } = await supabaseAdmin
     .from('email_otps')
@@ -44,6 +48,7 @@ export async function upsertOtp(input: {
         resend_count: resendCount,
         last_resent_at: lastResentAt ? lastResentAt.toISOString() : null,
         verified_at: null,
+        verify_attempts: verifyAttempts,
         updated_at: new Date().toISOString(),
       },
       { onConflict: 'user_id' }
@@ -116,5 +121,84 @@ export async function updateResendMeta(userId: string, resendCount: number): Pro
     })
     .eq('user_id', userId);
 
+  if (error) throw error;
+}
+
+/**
+ * Find the latest OTP record for a given email address.
+ */
+export async function findOtpByEmail(email: string): Promise<OtpRow | null> {
+  const { data, error } = await supabaseAdmin
+    .from('email_otps')
+    .select('*')
+    .eq('email', email.toLowerCase().trim())
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data as OtpRow | null;
+}
+
+/**
+ * Find all unverified OTP records that have expired before a given date.
+ */
+export async function findExpiredUnverifiedOtps(thresholdDate: Date): Promise<OtpRow[]> {
+  const { data, error } = await supabaseAdmin
+    .from('email_otps')
+    .select('*')
+    .is('verified_at', null)
+    .lt('expires_at', thresholdDate.toISOString())
+    .limit(100);
+
+  if (error) throw error;
+  return (data || []) as OtpRow[];
+}
+
+/**
+ * Delete all OTP records for a user.
+ */
+export async function deleteOtpsForUser(userId: string): Promise<void> {
+  const { error } = await supabaseAdmin
+    .from('email_otps')
+    .delete()
+    .eq('user_id', userId);
+
+  if (error) throw error;
+}
+
+/**
+ * Atomically increment the verify_attempts counter for a user.
+ * Used to track brute-force OTP submission attempts.
+ */
+export async function incrementVerifyAttempts(userId: string): Promise<number> {
+  // Prefer atomic RPC; fallback to read-modify-write
+  const { error } = await supabaseAdmin.rpc('increment_otp_verify_attempts', { p_user_id: userId });
+
+  if (!error) {
+    const row = await findOtpByUserId(userId);
+    return row?.verify_attempts ?? 1;
+  }
+
+  // Fallback
+  const row = await findOtpByUserId(userId);
+  if (!row) throw new Error('OTP row not found');
+  const newAttempts = (row.verify_attempts ?? 0) + 1;
+  const { error: e2 } = await supabaseAdmin
+    .from('email_otps')
+    .update({ verify_attempts: newAttempts, updated_at: new Date().toISOString() })
+    .eq('user_id', userId);
+  if (e2) throw e2;
+  return newAttempts;
+}
+
+/**
+ * Reset verify_attempts to 0 on successful verification or new OTP generation.
+ */
+export async function resetVerifyAttempts(userId: string): Promise<void> {
+  const { error } = await supabaseAdmin
+    .from('email_otps')
+    .update({ verify_attempts: 0, updated_at: new Date().toISOString() })
+    .eq('user_id', userId);
   if (error) throw error;
 }

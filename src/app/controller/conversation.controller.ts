@@ -149,7 +149,7 @@ export const setMessageReaction = asyncHandler(async (req: Request, res: Respons
 export const deleteMessage = asyncHandler(async (req: Request, res: Response) => {
   const conversationId = String(req.params.id);
   const messageId = String(req.params.messageId);
-  const { mode } = req.body as DeleteMessagePayload;
+  const mode = (req.body?.mode || (req.query?.mode as string) || 'delete_for_me') as string;
 
   if (mode === 'delete_for_everyone') {
     await conversationService.deleteMessageForEveryone(conversationId, messageId, req.userId as string);

@@ -79,7 +79,10 @@ router.post('/logout', authMiddleware, authController.logout);
 router.get('/session', authMiddleware, authController.session);
 
 // POST /api/auth/forgot-password
-router.post('/forgot-password', authController.forgotPassword);
+router.post('/forgot-password', otpSendLimiter, authController.forgotPassword);
+
+// POST /api/auth/password-reset/verify-otp
+router.post('/password-reset/verify-otp', otpVerifyLimiter, authController.verifyPasswordResetOtp);
 
 // POST /api/auth/reset-password
 router.post('/reset-password', authController.resetPassword);
@@ -125,8 +128,10 @@ router.post(
 // ─── Registration Rollback ────────────────────────────────────────────────────
 
 // DELETE /api/auth/register/cancel — rollback a pending (unverified) registration.
+// POST /api/auth/register/cancel — beacon/fallback rollback
 // No auth token required — the user has no session yet. Server-side guard refuses
 // the request if the OTP was already verified (i.e., the account is real/active).
 router.delete('/register/cancel', cancelRegistrationLimiter, authController.cancelRegistration);
+router.post('/register/cancel', cancelRegistrationLimiter, authController.cancelRegistration);
 
 export default router;
