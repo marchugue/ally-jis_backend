@@ -67,8 +67,12 @@ router.get('/friend-requests', notificationController.friendRequests);
 // PATCH /api/notifications/read-all
 router.patch('/read-all', notificationController.markAllRead);
 
+// PATCH /api/notifications/read-target
+router.patch('/read-target', notificationController.readTarget);
+
 // GET /api/notifications?limit=20
 router.get('/', notificationController.list);
+
 
 // GET /api/notifications/:id/redirection
 router.get('/:id/redirection', notificationController.getRedirection);

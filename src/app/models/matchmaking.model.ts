@@ -249,6 +249,8 @@ export async function createDirectMatch(input: {
       status: 'chatting',
       current_stage: 1,
       day_streak: 0,
+      match_points: 0,
+      stage_points: 0,
       user_a_alias: input.userAAlias,
       user_a_avatar: input.userAAvatar,
       user_b_alias: input.userBAlias,
@@ -310,6 +312,8 @@ export interface ConversationMatchLookup {
   status: MatchStatus;
   currentStage: number;
   dayStreak: number;
+  stagePoints: number;
+  matchPoints: number;
   revealedAt: string | null;
   myAlias: string | null;
   myAvatar: string | null;
@@ -335,7 +339,7 @@ export async function findMatchInfoForConversations(
   const { data, error } = await supabaseAdmin
     .from('matches')
     .select(
-      'id, conversation_id, status, current_stage, day_streak, revealed_at, user_a_id, user_b_id, user_a_alias, user_a_avatar, user_b_alias, user_b_avatar, chat_expires_at, confirmed_at',
+      'id, conversation_id, status, current_stage, day_streak, stage_points, match_points, revealed_at, user_a_id, user_b_id, user_a_alias, user_a_avatar, user_b_alias, user_b_avatar, chat_expires_at, confirmed_at',
     )
     .in('conversation_id', conversationIds);
   if (error) throw error;
@@ -349,6 +353,8 @@ export async function findMatchInfoForConversations(
       status: row.status,
       currentStage: row.current_stage,
       dayStreak: row.day_streak,
+      stagePoints: (row as any).stage_points ?? 0,
+      matchPoints: (row as any).match_points ?? 0,
       revealedAt: row.revealed_at,
       myAlias: isUserA ? row.user_a_alias : row.user_b_alias,
       myAvatar: isUserA ? row.user_a_avatar : row.user_b_avatar,
@@ -430,6 +436,17 @@ export async function markRevealedIfMatched(userIdA: string, userIdB: string): P
   if (updateError) throw updateError;
 }
 
+/**
+ * Marks a specific match as revealed (profile unlocked at 500 points).
+ */
+export async function revealMatch(matchId: string): Promise<void> {
+  const { error } = await supabaseAdmin
+    .from('matches')
+    .update({ revealed_at: new Date().toISOString() })
+    .eq('id', matchId);
+  if (error) throw error;
+}
+
 
 
 export interface DailyActivityRow {
@@ -471,6 +488,78 @@ export async function updateProgression(matchId: string, currentStage: number, d
 }
 
 // ---------------------------------------------------------------------------
+// Points progression (021_points_progression.sql)
+// ---------------------------------------------------------------------------
+
+export interface AwardTaskResult {
+  pointsAwarded: number;
+  newStagePoints: number;
+  newMatchPoints: number;
+}
+
+/**
+ * Awards points for a completed daily task. Idempotent — if already completed
+ * today it returns 0 points awarded without touching the counters.
+ */
+export async function awardTaskPoints(
+  matchId: string,
+  userId: string,
+  taskId: string,
+  taskDatePht: string,
+  basePoints: number,
+  multiplier: number,
+): Promise<AwardTaskResult> {
+  const { data, error } = await supabaseAdmin.rpc('award_task_points', {
+    p_match_id: matchId,
+    p_user_id: userId,
+    p_task_id: taskId,
+    p_task_date: taskDatePht,
+    p_base_points: basePoints,
+    p_multiplier: multiplier,
+  });
+  if (error) throw error;
+  const row = data?.[0];
+  return {
+    pointsAwarded: row?.points_awarded ?? 0,
+    newStagePoints: row?.new_stage_points ?? 0,
+    newMatchPoints: row?.new_match_points ?? 0,
+  };
+}
+
+/**
+ * Advances the match to the next stage and resets stage_points to 0.
+ */
+export async function advanceMatchStage(matchId: string, newStage: number): Promise<void> {
+  const { error } = await supabaseAdmin.rpc('advance_match_stage', {
+    p_match_id: matchId,
+    p_new_stage: newStage as unknown as never,
+  });
+  if (error) throw error;
+}
+
+/**
+ * Returns today's completed task entries for a match (both users combined).
+ */
+export interface DailyTaskStatusRow {
+  user_id: string;
+  task_id: string;
+  completed: boolean;
+  points_awarded: number;
+}
+
+export async function getDailyTaskStatus(
+  matchId: string,
+  taskDatePht: string,
+): Promise<DailyTaskStatusRow[]> {
+  const { data, error } = await supabaseAdmin.rpc('get_daily_task_status', {
+    p_match_id: matchId,
+    p_task_date: taskDatePht,
+  });
+  if (error) throw error;
+  return (data ?? []) as DailyTaskStatusRow[];
+}
+
+// ---------------------------------------------------------------------------
 // Startup reconciliation (safety net for in-memory timers not surviving a
 // restart — see matchmaking.service.ts#reconcileStaleMatches)
 // ---------------------------------------------------------------------------
@@ -493,4 +582,82 @@ export async function findStaleChattingMatches(): Promise<MatchRow[]> {
     .lt('chat_expires_at', new Date().toISOString());
   if (error) throw error;
   return (data ?? []) as MatchRow[];
+}
+
+/**
+ * Returns partner aliases and avatars for unrevealed Stage 4 matches involving userId.
+ * Used by feed.service.ts to mask partner identities in the Allies newsfeed filter.
+ */
+export async function getUnrevealedMatchPartners(
+  userId: string,
+  targetUserIds: string[],
+): Promise<Map<string, { alias: string; avatar: string }>> {
+  if (targetUserIds.length === 0) return new Map();
+
+  const { data, error } = await supabaseAdmin
+    .from('matches')
+    .select('user_a_id, user_b_id, user_a_alias, user_b_alias, user_a_avatar, user_b_avatar, revealed_at, current_stage, status, match_points')
+    .or(`user_a_id.eq.${userId},user_b_id.eq.${userId}`)
+    .in('status', ['chatting', 'confirmed'])
+    .gte('current_stage', 4)
+    .is('revealed_at', null);
+
+  if (error) {
+    console.warn('[getUnrevealedMatchPartners] Error:', error);
+    return new Map();
+  }
+
+  const map = new Map<string, { alias: string; avatar: string }>();
+  for (const m of data ?? []) {
+    if ((m as any).match_points >= 500) continue; // Profile unlocked, show real identity
+    const isUserA = m.user_a_id === userId;
+    const partnerId = isUserA ? m.user_b_id : m.user_a_id;
+    if (targetUserIds.includes(partnerId)) {
+      map.set(partnerId, {
+        alias: (isUserA ? m.user_b_alias : m.user_a_alias) || 'Anonymous Ally',
+        avatar: (isUserA ? m.user_b_avatar : m.user_a_avatar) || 'fox',
+      });
+    }
+  }
+  return map;
+}
+
+/**
+ * Finds an unrevealed active match between two specific users.
+ * Used by profile.service.ts to keep anonymous allies masked when viewing profiles.
+ */
+export async function getUnrevealedMatchBetween(
+  userIdA: string,
+  userIdB: string,
+): Promise<MatchRow | null> {
+  const { data, error } = await supabaseAdmin
+    .from('matches')
+    .select('*')
+    .or(
+      `and(user_a_id.eq.${userIdA},target_user_id.eq.${userIdB}),and(user_a_id.eq.${userIdB},target_user_id.eq.${userIdA})`,
+    )
+    .in('status', ['chatting', 'confirmed'])
+    .is('revealed_at', null)
+    .lt('match_points', 500)
+    .maybeSingle();
+
+  if (error || !data) {
+    // Fallback to query if needed
+    const { data: fallbackData } = await supabaseAdmin
+      .from('matches')
+      .select('*')
+      .or(`user_a_id.eq.${userIdA},user_b_id.eq.${userIdA}`)
+      .in('status', ['chatting', 'confirmed'])
+      .is('revealed_at', null);
+
+    const match = (fallbackData ?? []).find(
+      (m: any) =>
+        ((m.user_a_id === userIdA && m.user_b_id === userIdB) ||
+          (m.user_a_id === userIdB && m.user_b_id === userIdA)) &&
+        !m.revealed_at &&
+        (m.match_points ?? 0) < 500,
+    );
+    return (match as MatchRow) ?? null;
+  }
+  return data as MatchRow | null;
 }

@@ -1,4 +1,4 @@
-interface ExpoPushMessage {
+export interface ExpoPushMessage {
   to: string;
   sound?: 'default' | null;
   title?: string;
@@ -7,7 +7,27 @@ interface ExpoPushMessage {
   badge?: number;
   channelId?: string;
   categoryId?: string;
+  subtitle?: string;
+  priority?: 'default' | 'normal' | 'high';
+  /**
+   * Android: ID of the notification. Submitting another notification with the same tag
+   * replaces the existing notification in the device notification tray.
+   */
+  tag?: string;
+  /**
+   * iOS & Android: Coalesces notifications in transit; on iOS, replaces already-displayed notifications.
+   */
+  collapseId?: string;
+  /**
+   * iOS: Identifier for grouping notifications into threads.
+   */
+  threadId?: string;
+  /**
+   * iOS & Android: Whether to display notification when app is in foreground.
+   */
+  _displayInForeground?: boolean;
 }
+
 
 /**
  * Sends one or more push notifications using the Expo Push API.

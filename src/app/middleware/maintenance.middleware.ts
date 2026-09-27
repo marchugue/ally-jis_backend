@@ -11,7 +11,7 @@ import { asyncHandler } from '../utils/asyncHandler';
 import { isMaintenanceModeOn } from '../services/adminSettings.service';
 
 const ALWAYS_ALLOWED_PREFIXES = ['/health', '/admin'];
-const ALWAYS_ALLOWED_EXACT = ['/auth/login'];
+const ALWAYS_ALLOWED_EXACT = ['/auth/login', '/auth/refresh', '/auth/session', '/auth/logout'];
 
 export const maintenanceMiddleware = asyncHandler(async (req: Request, res: Response, next: NextFunction) => {
   if (ALWAYS_ALLOWED_PREFIXES.some((p) => req.path.startsWith(p)) || ALWAYS_ALLOWED_EXACT.includes(req.path)) {

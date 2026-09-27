@@ -3,6 +3,8 @@ import { supabaseAdmin } from '../config/supabase';
 import { testDatabaseConnection } from '../config/database';
 import { env } from '../config/env';
 
+import { isMaintenanceModeOn } from '../app/services/adminSettings.service';
+
 const router = Router();
 
 router.get('/', (_req, res) => {
@@ -11,6 +13,21 @@ router.get('/', (_req, res) => {
     service: 'ally-jis-api',
     supabaseUrl: env.SUPABASE_URL,
   });
+});
+
+/** Public system status & maintenance check */
+router.get('/status', async (_req, res, next) => {
+  try {
+    const { on, message } = await isMaintenanceModeOn();
+    res.json({
+      ok: true,
+      maintenance: on,
+      message,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err) {
+    next(err);
+  }
 });
 
 /** Test Supabase JS client (REST API to your project) */

@@ -12,9 +12,12 @@ import { requireAdminRole, requirePermission } from '../app/middleware/admin.mid
 const router = Router();
 
 router.use(authMiddleware);
-router.use(requireAdminRole);
 
+// GET /admin/me: returns { role, permissions } for admins, or { role: null, permissions: [] } for standard users
 router.get('/me', adminController.getMe);
+
+// All subsequent admin routes strictly require an administrative role
+router.use(requireAdminRole);
 
 router.get('/dashboard/kpis', requirePermission('view_analytics'), adminController.getDashboardKpis);
 router.get('/dashboard/charts', requirePermission('view_analytics'), adminController.getDashboardCharts);

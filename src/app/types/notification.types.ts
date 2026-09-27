@@ -1,3 +1,10 @@
+export type NotificationCategory =
+  | 'messages'
+  | 'connections'
+  | 'ally'
+  | 'safety'
+  | 'activity';
+
 export interface NotificationFromUser {
   id: string;
   avatar_url?: string | null;
@@ -53,11 +60,16 @@ export interface NotificationRow {
   is_read: boolean;
   from_user_id?: string | null;
   target_id?: string | null;
+  group_key?: string | null;
+  category?: NotificationCategory | null;
+  unread_count?: number;
   post_id?: string | null;
   comment_id?: string | null;
   parent_id?: string | null;
   child_id?: string | null;
   created_at: string;
+  updated_at?: string;
   from_user?: NotificationFromUser | NotificationFromUser[] | null;
   redirection?: NotificationRedirection | null;
 }
+

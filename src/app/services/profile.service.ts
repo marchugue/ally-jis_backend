@@ -1,5 +1,6 @@
 import * as profileModel from '../models/profile.model';
 import * as interactionModel from '../models/interaction.model';
+import * as matchModel from '../models/matchmaking.model';
 import { HttpError } from '../types/auth.types';
 import * as followModel from '../models/follow.model';
 import type { DiscoverProfileItem, ProfileFilterOptions, ProfileRow, UpdateProfilePayload, UsernameAvailability } from '../types/profile.types';
@@ -15,6 +16,21 @@ export async function getProfile(id: string, viewerId?: string): Promise<Profile
 
   // If viewing another user and not confirmed allies, mask real identifying info
   if (viewerId && viewerId !== id) {
+    const unrevealedMatch = await matchModel.getUnrevealedMatchBetween(viewerId, id);
+    if (unrevealedMatch) {
+      const isUserA = unrevealedMatch.user_a_id === viewerId;
+      const partnerAlias = isUserA ? unrevealedMatch.user_b_alias : unrevealedMatch.user_a_alias;
+      const partnerAvatar = isUserA ? unrevealedMatch.user_b_avatar : unrevealedMatch.user_a_avatar;
+      return {
+        ...profile,
+        full_name: partnerAlias || 'Anonymous Ally',
+        username: 'anonymous',
+        avatar_url: null,
+        avatar_preset_id: partnerAvatar || 'fox',
+        bio: null,
+      } as any;
+    }
+
     const isAlly = await interactionModel.isAllies(viewerId, id);
     if (!isAlly) {
       return {

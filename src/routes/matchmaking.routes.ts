@@ -27,5 +27,6 @@ router.post('/:matchId/decline', matchmakingController.declineMatch);
 router.post('/:matchId/end', matchmakingController.endMatch);
 router.get('/:matchId/reveal', matchRevealController.getReveal);
 router.get('/:matchId/timeline', matchRevealController.getTimeline);
+router.post('/:matchId/tasks/:taskId/complete', matchRevealController.completeTask);
 
 export default router;

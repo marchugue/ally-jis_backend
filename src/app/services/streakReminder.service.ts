@@ -138,56 +138,22 @@ export async function checkAndSendStreakReminders(options?: StreakReminderOption
 
       const notifTitle = 'Streak Reminder 🔥';
       const notifDesc = 'Your streak is not yet activated! Send a message to activate.';
-      const descWithMeta = `<!--meta:${JSON.stringify({ targetId: conversationId })}-->${notifDesc}`;
 
-      // Insert DB notification (embedding targetId in description metadata)
-      const { error: insErr } = await supabaseAdmin.from('notifications').insert({
-        user_id: userId,
-        type: 'streak_reminder',
+      const { dispatchStreakReminderNotification } = await import('./notificationEngine.service');
+      await dispatchStreakReminderNotification({
+        recipientId: userId,
+        conversationId,
         title: notifTitle,
-        description: descWithMeta,
-        is_read: false,
+        description: notifDesc,
+      }).catch((err) => {
+        console.error(`[StreakReminder] Failed to dispatch notification for user ${userId}:`, err);
       });
 
-      if (insErr) {
-        console.error(`[StreakReminder] Failed to insert notification for user ${userId}:`, insErr);
-      }
-
-      if (!insErr) {
-        remindersSent++;
-        // Emit real-time socket event
-        emitToUser(userId, 'notification:new', {
-          type: 'streak_reminder',
-          title: notifTitle,
-          description: notifDesc,
-          targetId: conversationId,
-        });
-        emitToUser(userId, 'streak:reminder', { conversationId });
-      }
-
-      // Push notification
-      try {
-        const tokenMap = await getPushTokens([userId]);
-        const pushToken = tokenMap.get(userId);
-        if (pushToken) {
-          await sendExpoPushNotification([
-            {
-              to: pushToken,
-              sound: 'default',
-              title: notifTitle,
-              body: notifDesc,
-              data: {
-                conversationId,
-                type: 'streak_reminder',
-              },
-            },
-          ]);
-        }
-      } catch (pushErr) {
-        console.warn(`[StreakReminder] Failed to push to user ${userId}:`, pushErr);
-      }
+      remindersSent++;
+      emitToUser(userId, 'streak:reminder', { conversationId });
     }
   }
+
 
   console.log(`[StreakReminder] Finished check. Sent ${remindersSent} reminders.`);
   return { conversationsChecked: pendingStreaks.length, remindersSent };

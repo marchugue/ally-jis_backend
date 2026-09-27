@@ -15,8 +15,9 @@ import * as conversationModel from '../models/conversation.model';
 import { upgradeConversationToAllied } from '../models/conversation.model';
 import { clearAllTimersForMatch, clearTimer, scheduleTimer } from '../utils/matchTimers';
 import { HttpError } from '../types/auth.types';
+import { MIN_MESSAGES_PER_VALID_DAY, stageName, stageForStreak } from '../constants/progression';
 import { pickTwoDistinctIdentities } from '../constants/anonymousIdentity';
-import { MIN_MESSAGES_PER_VALID_DAY, stageForStreak, stageName } from '../constants/progression';
+import * as matchTasksService from './matchTasks.service';
 import { emitToUser } from './realtime.service';
 import { phtDateStr } from '../utils/pht';
 
@@ -231,13 +232,15 @@ export async function recordMatchMessage(conversationId: string, senderId: strin
   const currentMatch = await matchModel.getMatchByConversationId(conversationId);
   if (!currentMatch) return;
 
-  // If already confirmed, ensure timer is cleared and update progression
+  // If already confirmed, ensure timer is cleared, update streak activity, award task points
   if (currentMatch.status === 'confirmed') {
     clearTimer(currentMatch.id, 'chat');
     const isUserA = currentMatch.user_a_id === senderId;
     const today = phtDateStr();
     await matchModel.incrementDailyActivity(currentMatch.id, isUserA, today).catch(() => {});
-    await recomputeProgression(currentMatch.id).catch(() => {});
+    await recomputeStreak(currentMatch.id).catch(() => {});
+    // Award send_message task points
+    await matchTasksService.onMatchMessageSent(currentMatch.id, senderId).catch(() => {});
     return;
   }
 
@@ -257,7 +260,7 @@ export async function recordMatchMessage(conversationId: string, senderId: strin
     emitToUser(currentMatch.user_a_id, 'matchmaking:match_confirmed', payload);
     emitToUser(currentMatch.user_b_id, 'matchmaking:match_confirmed', payload);
   } else {
-    // Only one participant has messaged so far — push the expiry deadline out 5 minutes in BOTH DB and timer
+    // Only one participant has messaged so far — push the expiry deadline out 5 minutes
     const newExpiresAt = new Date(Date.now() + CHAT_FIRST_MESSAGE_TIMEOUT_MS).toISOString();
     await matchModel.updateChatExpiry(currentMatch.id, newExpiresAt).catch(() => {});
 
@@ -273,30 +276,31 @@ export async function recordMatchMessage(conversationId: string, senderId: strin
     }
   }
 
-  // Day-based streak/stage progression
+  // Streak tracking (still used as multiplier bonus) + task points
   const targetMatch = match ?? currentMatch;
   if (targetMatch.status === 'chatting' || targetMatch.status === 'confirmed') {
     const isUserA = targetMatch.user_a_id === senderId;
     const today = phtDateStr();
     await matchModel.incrementDailyActivity(targetMatch.id, isUserA, today).catch(() => {});
-    await recomputeProgression(targetMatch.id).catch(() => {});
+    await recomputeStreak(targetMatch.id).catch(() => {});
+    // Award send_message task points
+    await matchTasksService.onMatchMessageSent(targetMatch.id, senderId).catch(() => {});
   }
 }
 
 /**
- * Recomputes day_streak/current_stage from match_daily_activity and
- * persists + broadcasts only if something actually changed. Safe to
- * call as often as needed (e.g. also from a status poll) — it's a pure
- * read-then-maybe-write, no side effects if nothing changed.
+ * Recomputes ONLY the day_streak from match_daily_activity and persists it.
+ * Streak is now used exclusively as a bonus multiplier for points — it does
+ * NOT gate stage advancement (that's done by reachingPOINTS_PER_STAGE via tasks).
  *
  * Streak counts consecutive PHT calendar days (UTC+8, Asia/Manila).
  * A day only counts if BOTH sides hit MIN_MESSAGES_PER_VALID_DAY.
  * Today never *breaks* a streak just for being incomplete — it simply
  * doesn't count yet until it's valid.
  */
-export async function recomputeProgression(matchId: string): Promise<{ stage: number; dayStreak: number }> {
+export async function recomputeStreak(matchId: string): Promise<{ dayStreak: number }> {
   const [rows, match] = await Promise.all([matchModel.getDailyActivity(matchId), matchModel.getMatchById(matchId)]);
-  if (!match) return { stage: 0, dayStreak: 0 };
+  if (!match) return { dayStreak: 0 };
 
   const validDates = new Set(
     rows
@@ -316,54 +320,75 @@ export async function recomputeProgression(matchId: string): Promise<{ stage: nu
     cursor = prev.toISOString().slice(0, 10);
   }
 
-  const stage = stageForStreak(dayStreak);
-  const changed = stage !== match.current_stage || dayStreak !== match.day_streak;
+  const newStage = Math.max(match.current_stage, stageForStreak(dayStreak));
+  const stageChanged = newStage !== match.current_stage;
+  const streakChanged = dayStreak !== match.day_streak;
 
-  if (changed) {
-    await matchModel.updateProgression(matchId, stage, dayStreak);
-    const payload = { matchId, stage, dayStreak, stageName: stageName(stage) };
-    emitToUser(match.user_a_id, 'matchmaking:stage_updated', payload);
-    emitToUser(match.user_b_id, 'matchmaking:stage_updated', payload);
-  }
+  if (streakChanged || stageChanged) {
+    await matchModel.updateProgression(matchId, newStage, dayStreak);
 
-  // Stage 4: Automatically become Allies when reaching Stage 4
-  if (stage >= 4 && !match.revealed_at) {
-    // Upgrade the conversation type to 'allied' — this is the DB-level
-    // signal that real profile data may now be shown to both members.
-    if (match.conversation_id) {
-      await upgradeConversationToAllied(match.conversation_id).catch((err) =>
-        console.error('[recomputeProgression] upgradeConversationToAllied failed:', err)
-      );
+    const payload = { matchId, dayStreak, stage: newStage };
+    emitToUser(match.user_a_id, 'matchmaking:streak_updated', payload);
+    emitToUser(match.user_b_id, 'matchmaking:streak_updated', payload);
+
+    if (stageChanged) {
+      const stagePayload = {
+        matchId,
+        stage: newStage,
+        stageName: stageName(newStage),
+        dayStreak,
+      };
+      emitToUser(match.user_a_id, 'matchmaking:stage_updated', stagePayload);
+      emitToUser(match.user_b_id, 'matchmaking:stage_updated', stagePayload);
+
+      // Stage 4 (10d streak): Feed unlock in "Allies" filter (remains anonymous until 500 points)
+      if (newStage >= 4) {
+        if (match.conversation_id) {
+          await upgradeConversationToAllied(match.conversation_id).catch(() => {});
+        }
+        await interactionModel.createAllyRelationship(match.user_a_id, match.user_b_id).catch(() => {});
+
+        const unlockPayload = {
+          matchId: match.id,
+          conversationId: match.conversation_id,
+          stage: 4,
+          feedUnlocked: true,
+        };
+        emitToUser(match.user_a_id, 'matchmaking:allies_unlocked', unlockPayload);
+        emitToUser(match.user_b_id, 'matchmaking:allies_unlocked', unlockPayload);
+
+        await Promise.all([
+          interactionModel.createNotification({
+            userId: match.user_a_id,
+            type: 'accepted',
+            title: '🎉 Campus Allies Unlocked!',
+            description:
+              'You reached a 10-day streak! Your feeds are now visible to each other in the Allies filter — still anonymous until 500 points.',
+            fromUserId: match.user_b_id,
+            targetId: match.conversation_id ?? undefined,
+          }),
+          interactionModel.createNotification({
+            userId: match.user_b_id,
+            type: 'accepted',
+            title: '🎉 Campus Allies Unlocked!',
+            description:
+              'You reached a 10-day streak! Your feeds are now visible to each other in the Allies filter — still anonymous until 500 points.',
+            fromUserId: match.user_a_id,
+            targetId: match.conversation_id ?? undefined,
+          }),
+        ]).catch(() => {});
+      }
     }
-
-    await matchModel.markRevealedIfMatched(match.user_a_id, match.user_b_id);
-    await interactionModel.createAllyRelationship(match.user_a_id, match.user_b_id);
-
-    const unlockPayload = { matchId, conversationId: match.conversation_id, stage: 4 };
-    emitToUser(match.user_a_id, 'matchmaking:allies_unlocked', unlockPayload);
-    emitToUser(match.user_b_id, 'matchmaking:allies_unlocked', unlockPayload);
-
-    await Promise.all([
-      interactionModel.createNotification({
-        userId: match.user_a_id,
-        type: 'accepted',
-        title: '🎉 Campus Allies Unlocked!',
-        description: 'You and your match completed the Ally Roadmap! Your identities have been revealed and you are now official Allies.',
-        fromUserId: match.user_b_id,
-        targetId: match.conversation_id,
-      }),
-      interactionModel.createNotification({
-        userId: match.user_b_id,
-        type: 'accepted',
-        title: '🎉 Campus Allies Unlocked!',
-        description: 'You and your match completed the Ally Roadmap! Your identities have been revealed and you are now official Allies.',
-        fromUserId: match.user_a_id,
-        targetId: match.conversation_id,
-      }),
-    ]).catch((err) => console.error('Error dispatching ally unlocked notification:', err));
   }
 
-  return { stage, dayStreak };
+  return { dayStreak };
+}
+
+/** @deprecated Use recomputeStreak() — kept for backward-compat callsites during migration. */
+export async function recomputeProgression(matchId: string): Promise<{ stage: number; dayStreak: number }> {
+  const { dayStreak } = await recomputeStreak(matchId);
+  const match = await matchModel.getMatchById(matchId);
+  return { stage: match?.current_stage ?? 0, dayStreak };
 }
 
 // ---------------------------------------------------------------------------
@@ -422,20 +447,19 @@ export async function requestDirectMatch(
     userBAvatar: identityB.avatar,
   });
 
-  // Notify target user (anonymous notification — no real identity in payload)
-  await interactionModel
-    .createNotification({
-      userId: targetUserId,
-      type: 'friend_request',
-      title: 'New Anonymous Match!',
-      description: 'An anonymous peer wants to connect with you! Say hello in anonymous chat.',
-      fromUserId: requesterId,
-      targetId: conversationId,
-    })
-    .catch((err) => console.error('Error creating match notification:', err));
+  // Notify target user via Notification Decision Engine (Connection Request)
+  const { dispatchConnectionRequestNotification } = await import('./notificationEngine.service');
+  await dispatchConnectionRequestNotification({
+    recipientId: targetUserId,
+    requesterId,
+    requesterName: identityA.alias || 'An anonymous peer',
+    conversationId,
+    isAnonymous: true,
+  }).catch((err) => console.error('Error creating match notification:', err));
 
   return { conversationId, matchId: match.id, isAllies };
 }
+
 
 /**
  * Called by interaction.service.ts#acceptConnection once two users

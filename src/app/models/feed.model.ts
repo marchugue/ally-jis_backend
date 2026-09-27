@@ -93,8 +93,6 @@ export async function findAcceptedConnectionIds(userId: string): Promise<Set<str
         const partnerId = m.user_a_id === userId ? m.user_b_id : m.user_a_id;
         if (m.revealed_at || (m.current_stage && m.current_stage >= 4)) {
           ids.add(partnerId);
-        } else if (!pendingPairs.has(`${userId}:${partnerId}`)) {
-          ids.add(partnerId);
         }
       }
     }
@@ -474,60 +472,14 @@ export async function createNotification(input: {
   postId?: string | null;
   commentId?: string | null;
 }): Promise<void> {
-  const { userId, type, title, description, fromUserId, postId, commentId } = input;
-
-  const baseRow = {
-    user_id: userId,
-    type,
-    title,
-    description,
-    from_user_id: fromUserId,
-  };
-
-  const optionalCols: Record<string, unknown> = {};
-  if (postId) optionalCols['post_id'] = postId;
-  if (commentId) optionalCols['comment_id'] = commentId;
-
-  let insertedData: any = null;
-  let insertError: any = null;
-
-  if (Object.keys(optionalCols).length > 0) {
-    const res = await supabaseAdmin
-      .from('notifications')
-      .insert({ ...baseRow, ...optionalCols })
-      .select()
-      .maybeSingle();
-    insertedData = res.data;
-    insertError = res.error;
-  }
-
-  // If initial insert with optional columns was skipped or failed due to missing columns/schema cache
-  if (!insertedData && (!Object.keys(optionalCols).length || insertError)) {
-    const fallbackRes = await supabaseAdmin
-      .from('notifications')
-      .insert(baseRow)
-      .select()
-      .maybeSingle();
-    insertedData = fallbackRes.data;
-    insertError = fallbackRes.error;
-  }
-
-  if (insertError) {
-    console.error('[createNotification] Failed to insert notification in DB:', insertError);
-  }
-
-  try {
-    emitToUser(
-      userId,
-      'notification:new',
-      insertedData || {
-        ...baseRow,
-        post_id: postId ?? null,
-        comment_id: commentId ?? null,
-        created_at: new Date().toISOString(),
-      }
-    );
-  } catch (err) {
-    console.error('[createNotification] Failed to emit socket notification:', err);
-  }
+  const { dispatchActivityNotification } = await import('../services/notificationEngine.service');
+  await dispatchActivityNotification({
+    recipientId: input.userId,
+    fromUserId: input.fromUserId,
+    type: input.type,
+    title: input.title,
+    description: input.description,
+    postId: input.postId,
+    commentId: input.commentId,
+  });
 }

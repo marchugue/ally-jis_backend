@@ -5,11 +5,20 @@ import * as adminService from '../services/admin.service';
 import * as adminSettingsService from '../services/adminSettings.service';
 import { asyncHandler } from '../utils/asyncHandler';
 
+import * as adminModel from '../models/admin.model';
+import { isAdminRole } from '../constants/permissions';
+
 // GET /admin/me — role + effective permissions for the current user.
 // The frontend's route guard and nav both key off this.
+// For standard/student users, returns { role: null, permissions: [] } with 200 OK.
 export const getMe = asyncHandler(async (req: Request, res: Response) => {
+  const role = req.adminRole || (await adminModel.getUserRole(req.userId as string));
+  if (!role || !isAdminRole(role)) {
+    res.status(200).json({ role: null, permissions: [] });
+    return;
+  }
   const permissions = await adminService.getEffectivePermissions(req.userId as string);
-  res.status(200).json({ role: req.adminRole, permissions });
+  res.status(200).json({ role, permissions });
 });
 
 // GET /admin/dashboard/kpis

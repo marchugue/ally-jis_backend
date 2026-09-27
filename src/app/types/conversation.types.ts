@@ -70,6 +70,8 @@ export type ConversationVariant = 'regular' | 'anonymous' | 'anonymous_ended';
 export interface ConversationMatchInfo {
   matchId: string;
   stage: number;
+  stagePoints?: number;
+  matchPoints?: number;
   dayStreak: number;
   streakActiveToday?: boolean;
   streakRestoreDeadline?: string | null;

@@ -349,57 +349,61 @@ export async function createNotification(input: {
 }): Promise<void> {
   const { userId, type, title, description, fromUserId, targetId, postId, commentId } = input;
 
-  const insertPayload: Record<string, any> = {
-    user_id: userId,
+  if (type === 'friend_request' || type === 'connection_request') {
+    const { dispatchConnectionRequestNotification } = await import('../services/notificationEngine.service');
+    await dispatchConnectionRequestNotification({
+      recipientId: userId,
+      requesterId: fromUserId || '',
+      requesterName: title || 'Someone',
+      conversationId: targetId || undefined,
+      isAnonymous: !fromUserId,
+    });
+    return;
+  }
+
+  if (type === 'connection_accepted' || type === 'accepted') {
+    const { dispatchConnectionAcceptedNotification } = await import('../services/notificationEngine.service');
+    await dispatchConnectionAcceptedNotification({
+      recipientId: userId,
+      acceptorId: fromUserId || '',
+      acceptorName: title || 'Someone',
+      conversationId: targetId || '',
+      isAnonymous: !fromUserId,
+    });
+    return;
+  }
+
+  if (type === 'match') {
+    const { dispatchAllyMatchedNotification } = await import('../services/notificationEngine.service');
+    await dispatchAllyMatchedNotification({
+      recipientId: userId,
+      conversationId: targetId || '',
+      matchId: targetId || '',
+    });
+    return;
+  }
+
+  if (type === 'admin_warning' || type === 'safety' || type === 'emergency') {
+    const { dispatchSafetyAlertNotification } = await import('../services/notificationEngine.service');
+    await dispatchSafetyAlertNotification({
+      recipientId: userId,
+      title,
+      message: description,
+      alertId: targetId || undefined,
+    });
+    return;
+  }
+
+  const { dispatchActivityNotification } = await import('../services/notificationEngine.service');
+  await dispatchActivityNotification({
+    recipientId: userId,
+    fromUserId,
     type,
     title,
     description,
-    from_user_id: fromUserId ?? null,
-  };
-  if (targetId) insertPayload.target_id = targetId;
-  if (postId) insertPayload.post_id = postId;
-  if (commentId) insertPayload.comment_id = commentId;
-
-  let insertedData: any = null;
-  const { data, error } = await supabaseAdmin
-    .from('notifications')
-    .insert(insertPayload)
-    .select()
-    .maybeSingle();
-
-  if (error) {
-    const { data: fallbackData, error: fallbackError } = await supabaseAdmin
-      .from('notifications')
-      .insert({
-        user_id: userId,
-        type,
-        title,
-        description,
-        from_user_id: fromUserId ?? null,
-      })
-      .select()
-      .maybeSingle();
-    if (fallbackError) throw fallbackError;
-    insertedData = fallbackData;
-  } else {
-    insertedData = data;
-  }
-
-  try {
-    emitToUser(
-      userId,
-      'notification:new',
-      insertedData || {
-        user_id: userId,
-        type,
-        title,
-        description,
-        from_user_id: fromUserId ?? null,
-        target_id: targetId ?? null,
-        created_at: new Date().toISOString(),
-      }
-    );
-  } catch {
-    // Non-blocking socket emission
-  }
+    targetId,
+    postId,
+    commentId,
+  });
 }
+

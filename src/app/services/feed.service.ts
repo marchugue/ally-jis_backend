@@ -1,6 +1,7 @@
 import * as feedModel from '../models/feed.model';
 import * as profileModel from '../models/profile.model';
 import * as followModel from '../models/follow.model';
+import * as matchModel from '../models/matchmaking.model';
 import { HttpError } from '../types/auth.types';
 import { getDeterministicAnonymousAvatar } from '../constants/anonymousIdentity';
 import type {
@@ -37,22 +38,38 @@ async function hydratePosts(viewerId: string, posts: PostRow[]): Promise<PostWit
 
   const authorIds = [...new Set(posts.map((p) => p.author_id))];
   const postIds = posts.map((p) => p.id);
-  const [profileMap, likedIds, mediaMap, followingIds, connectionIds] = await Promise.all([
+  const [profileMap, likedIds, mediaMap, followingIds, connectionIds, unrevealedPartners] = await Promise.all([
     feedModel.findProfilesByIds(authorIds),
     feedModel.findLikedPostIds(viewerId, postIds),
     feedModel.findMediaForPosts(postIds),
     followModel.getFollowingIds(viewerId),
     feedModel.findAcceptedConnectionIds(viewerId),
+    matchModel.getUnrevealedMatchPartners(viewerId, authorIds),
   ]);
 
   return posts.map((post) => {
     const rawAuthor = profileMap.get(post.author_id);
     const isOwn = viewerId === post.author_id;
     const isAlly = isOwn || connectionIds.has(post.author_id);
+    const unrevealed = !isOwn ? unrevealedPartners.get(post.author_id) : null;
 
     let author: AuthorSummary | null = null;
     if (rawAuthor) {
-      if (isAlly) {
+      if (unrevealed) {
+        // Stage 4 campus ally from an unrevealed match — feed is unlocked but identity is masked
+        author = {
+          id: rawAuthor.id,
+          full_name: unrevealed.alias,
+          username: 'anonymous',
+          avatar_url: null,
+          avatarKey: unrevealed.avatar,
+          department: null,
+          course: null,
+          interests: null,
+          is_following: false,
+          is_ally: true,
+        };
+      } else if (isAlly) {
         author = {
           ...rawAuthor,
           is_following: isOwn ? false : followingIds.has(post.author_id),
@@ -88,20 +105,31 @@ async function hydrateComments(viewerId: string, comments: CommentRow[]): Promis
   if (comments.length === 0) return [];
 
   const authorIds = [...new Set(comments.map((c) => c.author_id))];
-  const [profileMap, likedIds, connectionIds] = await Promise.all([
+  const [profileMap, likedIds, connectionIds, unrevealedPartners] = await Promise.all([
     feedModel.findProfilesByIds(authorIds),
     feedModel.findLikedCommentIds(viewerId, comments.map((c) => c.id)),
     feedModel.findAcceptedConnectionIds(viewerId),
+    matchModel.getUnrevealedMatchPartners(viewerId, authorIds),
   ]);
 
   return comments.map((comment) => {
     const rawAuthor = profileMap.get(comment.author_id);
     const isOwn = viewerId === comment.author_id;
     const isAlly = isOwn || connectionIds.has(comment.author_id);
+    const unrevealed = !isOwn ? unrevealedPartners.get(comment.author_id) : null;
 
     let author: AuthorSummary | null = null;
     if (rawAuthor) {
-      if (isAlly) {
+      if (unrevealed) {
+        author = {
+          id: rawAuthor.id,
+          full_name: unrevealed.alias,
+          username: 'anonymous',
+          avatar_url: null,
+          avatarKey: unrevealed.avatar,
+          is_ally: true,
+        };
+      } else if (isAlly) {
         author = {
           ...rawAuthor,
           is_ally: true,

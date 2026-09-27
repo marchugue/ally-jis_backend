@@ -47,6 +47,9 @@ export interface MatchRow {
   day_streak: number;
   // Added in migrations/005_matchmaking_reveal_link.sql.
   revealed_at: string | null;
+  // Added in migrations/021_points_progression.sql.
+  match_points: number;
+  stage_points: number;
 }
 
 export interface CandidateResult {

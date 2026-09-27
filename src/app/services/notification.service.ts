@@ -1,11 +1,13 @@
 import * as notificationModel from '../models/notification.model';
 import { supabaseAdmin } from '../../config/supabase';
 import type {
+  NotificationCategory,
   NotificationRedirection,
   NotificationRedirectionResponse,
   NotificationRedirectionTree,
   NotificationRow,
 } from '../types/notification.types';
+
 import { HttpError } from '../types/auth.types';
 
 const DEFAULT_LIMIT = 20;
@@ -254,13 +256,47 @@ export function computeNotificationRedirection(
   return null;
 }
 
-function transformNotificationRow(row: NotificationRow): NotificationRow {
+export function deriveCategory(type: string): NotificationCategory {
+  if (type === 'message' || type === 'anon_match') return 'messages';
+  if (
+    type === 'friend_request' ||
+    type === 'connection_request' ||
+    type === 'accepted' ||
+    type === 'connection_accepted' ||
+    type === 'new_follower'
+  ) {
+    return 'connections';
+  }
+  if (
+    type === 'match' ||
+    type.includes('ally') ||
+    type.includes('stage') ||
+    type.includes('revealed') ||
+    type.includes('unlocked')
+  ) {
+    return 'ally';
+  }
+  if (
+    type === 'safety' ||
+    type === 'emergency' ||
+    type === 'admin_warning' ||
+    type.includes('report')
+  ) {
+    return 'safety';
+  }
+  return 'activity';
+}
+
+export function transformNotificationRow(row: NotificationRow): NotificationRow {
   let description = row.description ?? '';
   let postId = row.post_id ?? null;
   let commentId = row.comment_id ?? null;
   let parentId = row.parent_id ?? null;
   let childId = row.child_id ?? null;
   let targetId = row.target_id ?? null;
+  let groupKey = row.group_key ?? null;
+  let category = row.category ?? null;
+  let unreadCount = row.unread_count ?? 1;
 
   const metaMatch = description.match(/<!--meta:(\{.*?\})-->/);
   if (metaMatch && metaMatch[1]) {
@@ -271,9 +307,33 @@ function transformNotificationRow(row: NotificationRow): NotificationRow {
       if (meta.parentId) parentId = meta.parentId;
       if (meta.childId) childId = meta.childId;
       if (meta.targetId) targetId = meta.targetId;
+      if (meta.groupKey) groupKey = meta.groupKey;
+      if (meta.category) category = meta.category;
+      if (typeof meta.unreadCount === 'number') unreadCount = meta.unreadCount;
       description = description.replace(/<!--meta:\{.*?\}-->/, '').trim();
     } catch {
       // Fallback gracefully
+    }
+  }
+
+  if (!category) {
+    category = deriveCategory(row.type);
+  }
+
+  if (!groupKey) {
+    if (row.type === 'message' || row.type === 'anon_match') {
+      groupKey = `conversation:${targetId || postId || row.id}`;
+    } else if (
+      row.type === 'friend_request' ||
+      row.type === 'connection_request' ||
+      row.type === 'accepted' ||
+      row.type === 'connection_accepted'
+    ) {
+      groupKey = `connection:${row.from_user_id || targetId || row.id}`;
+    } else if (row.type === 'streak_reminder') {
+      groupKey = `reminder:streak:${targetId || row.id}`;
+    } else if (row.type === 'match') {
+      groupKey = `ally:${targetId || row.id}`;
     }
   }
 
@@ -291,6 +351,9 @@ function transformNotificationRow(row: NotificationRow): NotificationRow {
     ...row,
     description,
     target_id: targetId,
+    group_key: groupKey,
+    category,
+    unread_count: unreadCount,
     post_id: postId,
     comment_id: commentId,
     parent_id: parentId,
@@ -299,31 +362,59 @@ function transformNotificationRow(row: NotificationRow): NotificationRow {
   };
 }
 
+/**
+ * Facebook-style notification deduplication and consolidation.
+ * Collapses multiple notifications with the same groupKey so only
+ * the most recent is displayed, aggregating unread count.
+ */
 function consolidateNotifications(items: NotificationRow[]): NotificationRow[] {
-  let seenAnonMatch = false;
-  const result: NotificationRow[] = [];
+  const seenGroups = new Map<string, NotificationRow>();
+  const standaloneItems: NotificationRow[] = [];
 
   for (const item of items) {
-    if (item.type === 'anon_match') {
-      if (seenAnonMatch) {
-        continue;
+    const key = item.group_key || (item.target_id && `${item.type}:${item.target_id}`);
+
+    if (key) {
+      if (seenGroups.has(key)) {
+        const existing = seenGroups.get(key)!;
+        // Keep the latest timestamp and aggregate unread count if unread
+        if (!item.is_read) {
+          existing.unread_count = (existing.unread_count || 1) + (item.unread_count || 1);
+        }
+      } else {
+        seenGroups.set(key, { ...item });
       }
-      seenAnonMatch = true;
+    } else {
+      standaloneItems.push(item);
     }
-    result.push(item);
   }
 
-  return result;
+  const combined = [...Array.from(seenGroups.values()), ...standaloneItems];
+  return combined.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
 }
 
 /**
- * GET /notifications?limit=20
+ * GET /notifications?limit=20&category=...
  */
-export async function listNotifications(userId: string, limit?: number): Promise<NotificationRow[]> {
-  const rows = await notificationModel.findByUser(userId, limit ?? DEFAULT_LIMIT);
+export async function listNotifications(
+  userId: string,
+  limit?: number,
+  category?: string
+): Promise<NotificationRow[]> {
+  const rows = await notificationModel.findByUser(userId, limit ?? DEFAULT_LIMIT, category);
   const transformed = rows.map(transformNotificationRow);
-  return consolidateNotifications(transformed);
+  const consolidated = consolidateNotifications(transformed);
+
+  if (category && category !== 'all') {
+    if (category === 'unread') {
+      return consolidated.filter((n) => !n.is_read);
+    }
+    return consolidated.filter((n) => n.category === category);
+  }
+
+  return consolidated;
 }
+
 
 /**
  * GET /notifications/:id/redirection
@@ -492,19 +583,32 @@ export async function listFriendRequests(userId: string): Promise<NotificationRo
  * PATCH /notifications/:id/read
  */
 export async function markRead(id: string, userId: string): Promise<void> {
-  await notificationModel.markOneRead(id, userId);
+  const { markNotificationRead } = await import('./notificationEngine.service');
+  await markNotificationRead(id, userId);
+}
+
+/**
+ * PATCH /notifications/read-target
+ * Marks all notifications for a specific conversation or target as read.
+ */
+export async function markTargetRead(targetId: string, userId: string): Promise<void> {
+  const { markConversationNotificationsRead } = await import('./notificationEngine.service');
+  await markConversationNotificationsRead(targetId, userId);
 }
 
 /**
  * PATCH /notifications/read-all
  */
 export async function markAllRead(userId: string): Promise<void> {
-  await notificationModel.markAllRead(userId);
+  const { markAllNotificationsRead } = await import('./notificationEngine.service');
+  await markAllNotificationsRead(userId);
 }
 
 /**
  * DELETE /notifications
  */
 export async function clearAllNotifications(userId: string): Promise<void> {
-  await notificationModel.deleteAll(userId);
+  const { clearAllNotifications: engineClearAll } = await import('./notificationEngine.service');
+  await engineClearAll(userId);
 }
+

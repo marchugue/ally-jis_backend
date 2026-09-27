@@ -95,15 +95,14 @@ export async function acceptConnection(
     console.warn('Failed to delete handled friend_request notification:', err);
   });
 
-  // Notify the requester that their request was accepted and the anonymous
-  // chat is ready — use a neutral message that does not reveal identity.
-  await interactionModel.createNotification({
-    userId: requesterId,
-    type: 'connection_accepted',
-    title: 'Match Request Accepted!',
-    description: 'Your match request was accepted! Start your anonymous chat to begin the Ally Roadmap.',
-    fromUserId: null as any, // deliberately null — do NOT expose acceptor identity
-    targetId: result.conversationId,
+  // Notify the requester that their request was accepted (REPLACE previous connection notification)
+  const { dispatchConnectionAcceptedNotification } = await import('./notificationEngine.service');
+  await dispatchConnectionAcceptedNotification({
+    recipientId: requesterId,
+    acceptorId: currentUserId,
+    acceptorName: 'Your peer',
+    conversationId: result.conversationId,
+    isAnonymous: true,
   }).catch((err) => {
     console.warn('Failed to notify requester of accepted match:', err);
   });
@@ -113,6 +112,7 @@ export async function acceptConnection(
   emitToUser(requesterId, 'matchmaking:match_accepted', {
     conversationId: result.conversationId,
   });
+
 
   return { conversationId: result.conversationId };
 }

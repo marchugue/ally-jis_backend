@@ -3,6 +3,7 @@ import * as conversationModel from '../models/conversation.model';
 import * as moderationModel from '../models/moderation.model';
 import * as matchModel from '../models/matchmaking.model';
 import * as matchmakingService from './matchmaking.service';
+import * as matchTasksService from './matchTasks.service';
 import * as streakService from './conversationStreak.service';
 import * as streakModel from '../models/conversationStreak.model';
 import { supabaseAdmin } from '../../config/supabase';
@@ -97,6 +98,8 @@ async function attachVariant(conversations: ConversationRow[], userId: string): 
       status: match.status,
       stage: match.currentStage,
       stageName: capabilities.stageName,
+      stagePoints: match.stagePoints,
+      matchPoints: match.matchPoints,
       capabilities,
       dayStreak: match.dayStreak,
       myAlias: match.myAlias,
@@ -355,6 +358,12 @@ export async function markConversationRead(
   }
 
   await conversationModel.markRead(conversationId, userId, readAt);
+
+  // Facebook-Style Read Synchronization: Mark conversation notifications read and clear device tray
+  const { markConversationNotificationsRead } = await import('./notificationEngine.service');
+  await markConversationNotificationsRead(conversationId, userId).catch((err) => {
+    console.warn('[markConversationRead] Error syncing notifications:', err);
+  });
 }
 
 /**
@@ -375,6 +384,7 @@ export async function getConversationWithUser(
 export async function listMyMemberships(userId: string): Promise<ConversationMembershipRow[]> {
   return conversationModel.findMembershipsForUser(userId);
 }
+
 
 /**
  * GET /conversations/:id/messages
@@ -477,123 +487,52 @@ export async function sendMessage(input: {
     await matchmakingService.recordMatchMessage(conversationId, senderId);
 
     if (!match.revealed_at) {
-      // Still anonymous — hide real identity and use anonymous alias in notifications.
-      const senderIsUserA = match.user_a_id === senderId;
-      const senderAlias = senderIsUserA
-        ? (match.user_a_alias || 'Anonymous Ally')
-        : (match.user_b_alias || 'Anonymous Ally');
-
-      await Promise.all(
-        otherMemberIds.map((recipientId) =>
-          conversationModel
-            .createAnonymousMatchNotification({
-              userId: recipientId,
-              description: content ?? 'Sent a photo',
-              senderAlias,
-              conversationId,
-            })
-            .catch((err) => console.error('Error creating anon match notification:', err)),
-        ),
-      );
-    } else {
-      // Revealed match — safe to include the sender's real identity.
-      await Promise.all(
-        otherMemberIds.map((recipientId) =>
-          conversationModel
-            .createMessageNotification({
-              userId: recipientId,
-              fromUserId: senderId,
-              description: content ?? 'Sent a photo',
-              conversationId,
-            })
-            .catch((err) => console.error('Error creating message notification:', err)),
-        ),
-      );
+      // Award photo task points if images were sent (Stage 3+)
+      if (hasImages) {
+        await matchTasksService.onMatchPhotoSent(match.id, senderId).catch(() => {});
+      }
     }
-  } else {
-    await Promise.all(
-      otherMemberIds.map((recipientId) =>
-        conversationModel
-          .createMessageNotification({
-            userId: recipientId,
-            fromUserId: senderId,
-            description: content ?? 'Sent a photo',
-            conversationId,
-          })
-          .catch((err) => console.error('Error creating message notification:', err)),
-      ),
-    );
   }
 
-  // ── Native Expo Push Notification dispatch (MESSAGES ONLY) ───────────
+  // ── Facebook-Style Message Notification & Push Dispatch ────────────────
+  // One notification per conversation that updates ("Alex (3 new messages)"),
+  // single push card per conversation, accurate unread badge counts.
   void (async () => {
     try {
-      const { getPushTokens } = await import('../models/pushToken.model');
-      const { sendExpoPushNotification } = await import('./pushNotification.service');
-      const profileModel = await import('../models/profile.model');
+      const isAnon = Boolean(match && !match.revealed_at);
+      let senderName = 'New Message';
 
-      const tokenMap = await getPushTokens(otherMemberIds);
-      if (tokenMap.size > 0) {
-        const isAnon = match && !match.revealed_at;
-        let senderName = 'New Message';
-        if (!isAnon) {
-          const senderProfile = await profileModel.findById(senderId);
-          if (senderProfile) {
-            senderName = senderProfile.full_name || senderProfile.username || 'New Message';
-          }
-        } else {
-          const senderIsUserA = match?.user_a_id === senderId;
-          senderName = senderIsUserA
-            ? (match?.user_a_alias || 'Anonymous Ally')
-            : (match?.user_b_alias || 'Anonymous Ally');
+      if (!isAnon) {
+        const profileModel = await import('../models/profile.model');
+        const senderProfile = await profileModel.findById(senderId);
+        if (senderProfile) {
+          senderName = senderProfile.full_name || senderProfile.username || 'New Message';
         }
-
-        const pushBody = content
-          ? content.length > 80 ? content.slice(0, 77) + '...' : content
-          : '📷 Sent a photo';
-
-        const pushMessages = [];
-        for (const recipientId of otherMemberIds) {
-          const token = tokenMap.get(recipientId);
-          if (token) {
-            let unreadBadge = 1;
-            try {
-              const { count } = await supabaseAdmin
-                .from('notifications')
-                .select('id', { count: 'exact', head: true })
-                .eq('user_id', recipientId)
-                .eq('is_read', false);
-              if (typeof count === 'number' && count > 0) {
-                unreadBadge = count;
-              }
-            } catch {
-              unreadBadge = 1;
-            }
-
-            pushMessages.push({
-              to: token,
-              sound: 'default' as const,
-              title: senderName,
-              body: pushBody,
-              channelId: 'default',
-              categoryId: 'message_actions',
-              badge: unreadBadge,
-              data: {
-                conversationId,
-                type: isAnon ? 'anon_match' : 'message',
-              },
-            });
-          }
-        }
-
-        if (pushMessages.length > 0) {
-          await sendExpoPushNotification(pushMessages);
-        }
+      } else {
+        const senderIsUserA = match?.user_a_id === senderId;
+        senderName = senderIsUserA
+          ? (match?.user_a_alias || 'Anonymous Ally')
+          : (match?.user_b_alias || 'Anonymous Ally');
       }
+
+      const { dispatchMessageNotification } = await import('./notificationEngine.service');
+      await Promise.all(
+        otherMemberIds.map((recipientId) =>
+          dispatchMessageNotification({
+            recipientId,
+            senderId,
+            senderName,
+            conversationId,
+            content,
+            isAnonymous: isAnon,
+          }).catch((err) => console.error('Error dispatching message notification:', err))
+        )
+      );
     } catch (err) {
-      console.error('[sendMessage] Push notification dispatch failed:', err);
+      console.error('[sendMessage] Notification dispatch failed:', err);
     }
   })();
+
 
   // ── Streak tracking for ALL conversations (PHT calendar day) ──────────────
   // This runs for every conversation type — regular DMs, anonymous matches,

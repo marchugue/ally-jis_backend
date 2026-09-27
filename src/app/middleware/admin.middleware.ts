@@ -15,7 +15,10 @@ import type { Permission } from '../types/admin.types';
 export const requireAdminRole = asyncHandler(async (req: Request, res: Response, next: NextFunction) => {
   const role = await adminModel.getUserRole(req.userId as string);
   if (!role || !isAdminRole(role)) {
-    res.status(403).json({ message: 'Admin access required' });
+    res.status(403).json({
+      error: 'Forbidden',
+      message: 'Administrator privileges are required to access this resource.',
+    });
     return;
   }
   req.adminRole = role;
@@ -26,7 +29,10 @@ export function requirePermission(permission: Permission) {
   return asyncHandler(async (req: Request, res: Response, next: NextFunction) => {
     const allowed = await adminService.hasPermission(req.userId as string, permission);
     if (!allowed) {
-      res.status(403).json({ message: `Missing permission: ${permission}` });
+      res.status(403).json({
+        error: 'Forbidden',
+        message: `Your administrator account does not have the '${permission}' permission.`,
+      });
       return;
     }
     next();

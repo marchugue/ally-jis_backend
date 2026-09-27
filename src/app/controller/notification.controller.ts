@@ -9,10 +9,11 @@ import type { Request, Response } from 'express';
 import * as notificationService from '../services/notification.service';
 import { asyncHandler } from '../utils/asyncHandler';
 
-// GET /notifications?limit=20
+// GET /notifications?limit=20&category=...
 export const list = asyncHandler(async (req: Request, res: Response) => {
   const limit = typeof req.query.limit === 'string' ? Number(req.query.limit) : undefined;
-  const notifications = await notificationService.listNotifications(req.userId as string, limit);
+  const category = typeof req.query.category === 'string' ? req.query.category : undefined;
+  const notifications = await notificationService.listNotifications(req.userId as string, limit, category);
   res.status(200).json(notifications);
 });
 
@@ -27,6 +28,15 @@ export const getRedirection = asyncHandler(async (req: Request, res: Response) =
   const id = String(req.params.id);
   const redirection = await notificationService.resolveNotificationRedirection(id, req.userId as string);
   res.status(200).json(redirection);
+});
+
+// PATCH /notifications/read-target
+export const readTarget = asyncHandler(async (req: Request, res: Response) => {
+  const targetId = String(req.body?.targetId || req.body?.conversationId || req.query.targetId || '');
+  if (targetId) {
+    await notificationService.markTargetRead(targetId, req.userId as string);
+  }
+  res.status(204).send();
 });
 
 // PATCH /notifications/:id/read

@@ -18,15 +18,25 @@ function isMissingColumnError(error: any): boolean {
 }
 
 /**
- * GET /notifications?limit=20
+ * GET /notifications?limit=20&category=...
  */
-export async function findByUser(userId: string, limit: number): Promise<NotificationRow[]> {
-  const { data, error } = await supabaseAdmin
+export async function findByUser(
+  userId: string,
+  limit: number,
+  category?: string
+): Promise<NotificationRow[]> {
+  let queryBuilder = supabaseAdmin
     .from('notifications')
     .select(NOTIFICATION_COLUMNS)
     .eq('user_id', userId)
     .order('created_at', { ascending: false })
     .limit(limit);
+
+  if (category && category !== 'all' && category !== 'unread') {
+    // If the category column exists, we can filter by it, but we can also filter in service for resilience
+  }
+
+  const { data, error } = await queryBuilder;
 
   if (error) {
     if (isMissingColumnError(error)) {
@@ -70,6 +80,105 @@ export async function findById(id: string): Promise<NotificationRow | null> {
 }
 
 /**
+ * Find an existing unread notification for a conversation to update (Facebook-style collapse)
+ */
+export async function findUnreadByConversation(
+  userId: string,
+  conversationId: string
+): Promise<NotificationRow | null> {
+  const { data, error } = await supabaseAdmin
+    .from('notifications')
+    .select(NOTIFICATION_COLUMNS)
+    .eq('user_id', userId)
+    .eq('is_read', false)
+    .in('type', ['message', 'anon_match'])
+    .order('created_at', { ascending: false });
+
+  if (error) {
+    if (isMissingColumnError(error)) {
+      const fallback = await supabaseAdmin
+        .from('notifications')
+        .select(NOTIFICATION_COLUMNS_FALLBACK)
+        .eq('user_id', userId)
+        .eq('is_read', false)
+        .in('type', ['message', 'anon_match'])
+        .order('created_at', { ascending: false });
+      if (fallback.error) return null;
+      const list = (fallback.data as NotificationRow[]) ?? [];
+      return (
+        list.find(
+          (n) =>
+            (n as any).target_id === conversationId ||
+            n.description?.includes(conversationId)
+        ) ?? null
+      );
+    }
+    return null;
+  }
+
+  const list = (data as NotificationRow[]) ?? [];
+  return (
+    list.find(
+      (n) =>
+        (n as any).target_id === conversationId ||
+        n.description?.includes(conversationId)
+    ) ?? null
+  );
+}
+
+/**
+ * Find existing unread notification by group key
+ */
+export async function findUnreadByGroupKey(
+  userId: string,
+  groupKey: string
+): Promise<NotificationRow | null> {
+  const { data, error } = await supabaseAdmin
+    .from('notifications')
+    .select(NOTIFICATION_COLUMNS)
+    .eq('user_id', userId)
+    .eq('is_read', false)
+    .order('created_at', { ascending: false });
+
+  if (error) return null;
+  const list = (data as NotificationRow[]) ?? [];
+  return (
+    list.find(
+      (n) =>
+        (n as any).group_key === groupKey ||
+        n.description?.includes(`"groupKey":"${groupKey}"`)
+    ) ?? null
+  );
+}
+
+/**
+ * Update an existing notification (e.g. title, description, unread_count, updated_at)
+ */
+export async function updateNotification(
+  id: string,
+  updates: Record<string, any>
+): Promise<void> {
+  const { error } = await supabaseAdmin
+    .from('notifications')
+    .update(updates)
+    .eq('id', id);
+
+  if (error) {
+    // If optional columns failed, strip and retry
+    const safeUpdates: Record<string, any> = {
+      title: updates.title,
+      description: updates.description,
+      is_read: updates.is_read ?? false,
+      created_at: updates.created_at ?? new Date().toISOString(),
+    };
+    await supabaseAdmin
+      .from('notifications')
+      .update(safeUpdates)
+      .eq('id', id);
+  }
+}
+
+/**
  * GET /notifications/friend-requests
  */
 export async function findFriendRequests(userId: string): Promise<NotificationRow[]> {
@@ -107,6 +216,44 @@ export async function markOneRead(id: string, userId: string): Promise<void> {
     .eq('user_id', userId);
 
   if (error) throw error;
+}
+
+/**
+ * Mark notifications read by conversation or target entity
+ */
+export async function markTargetRead(targetId: string, userId: string): Promise<void> {
+  // 1. Update directly by target_id if present
+  try {
+    await supabaseAdmin
+      .from('notifications')
+      .update({ is_read: true })
+      .eq('user_id', userId)
+      .eq('target_id', targetId);
+  } catch {
+    // ignore missing column
+  }
+
+  // 2. Fetch unread notifications and update those with description containing targetId
+  try {
+    const { data: unread } = await supabaseAdmin
+      .from('notifications')
+      .select('id, description')
+      .eq('user_id', userId)
+      .eq('is_read', false);
+
+    const matchingIds = (unread || [])
+      .filter((n) => n.description?.includes(targetId))
+      .map((n) => n.id);
+
+    if (matchingIds.length > 0) {
+      await supabaseAdmin
+        .from('notifications')
+        .update({ is_read: true })
+        .in('id', matchingIds);
+    }
+  } catch (err) {
+    console.warn('[markTargetRead] Error marking target notifications read:', err);
+  }
 }
 
 /**
@@ -164,4 +311,5 @@ export async function hasPendingFriendRequest(userId: string, fromUserId: string
   if (error) throw error;
   return (data?.length ?? 0) > 0;
 }
+
 
