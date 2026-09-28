@@ -18,6 +18,7 @@ import { HttpError } from '../types/auth.types';
 import { MIN_MESSAGES_PER_VALID_DAY, stageName, stageForStreak } from '../constants/progression';
 import { pickTwoDistinctIdentities } from '../constants/anonymousIdentity';
 import * as matchTasksService from './matchTasks.service';
+import * as streakService from './conversationStreak.service';
 import { emitToUser } from './realtime.service';
 import { phtDateStr } from '../utils/pht';
 
@@ -224,21 +225,18 @@ async function handleChatTimeout(matchId: string): Promise<void> {
 // ---------------------------------------------------------------------------
 
 /**
- * Call this from your existing message-send flow, right after a message
- * insert succeeds: `await matchmakingService.recordMatchMessage(conversationId, senderId)`.
- * No-ops if the conversation isn't tied to a live 'chatting' match.
+ * Call this from message-send flow right after a message is inserted.
+ * Confirms matches when both users have messaged, handles first-message timeout,
+ * and awards task points. Authoritative streak calculations are handled exclusively
+ * by conversationStreak.service.ts.
  */
 export async function recordMatchMessage(conversationId: string, senderId: string): Promise<void> {
   const currentMatch = await matchModel.getMatchByConversationId(conversationId);
   if (!currentMatch) return;
 
-  // If already confirmed, ensure timer is cleared, update streak activity, award task points
+  // If already confirmed, ensure timer is cleared and award task points
   if (currentMatch.status === 'confirmed') {
     clearTimer(currentMatch.id, 'chat');
-    const isUserA = currentMatch.user_a_id === senderId;
-    const today = phtDateStr();
-    await matchModel.incrementDailyActivity(currentMatch.id, isUserA, today).catch(() => {});
-    await recomputeStreak(currentMatch.id).catch(() => {});
     // Award send_message task points
     await matchTasksService.onMatchMessageSent(currentMatch.id, senderId).catch(() => {});
     return;
@@ -269,119 +267,26 @@ export async function recordMatchMessage(conversationId: string, senderId: strin
     });
 
     match = await matchModel.recordMatchMessage(conversationId, senderId).catch(() => null);
-    if (match) {
-      const payload = { matchId: match.id, streak: match.streak_count };
-      emitToUser(match.user_a_id, 'matchmaking:streak_update', payload);
-      emitToUser(match.user_b_id, 'matchmaking:streak_update', payload);
-    }
   }
 
-  // Streak tracking (still used as multiplier bonus) + task points
   const targetMatch = match ?? currentMatch;
   if (targetMatch.status === 'chatting' || targetMatch.status === 'confirmed') {
-    const isUserA = targetMatch.user_a_id === senderId;
-    const today = phtDateStr();
-    await matchModel.incrementDailyActivity(targetMatch.id, isUserA, today).catch(() => {});
-    await recomputeStreak(targetMatch.id).catch(() => {});
     // Award send_message task points
     await matchTasksService.onMatchMessageSent(targetMatch.id, senderId).catch(() => {});
   }
 }
 
 /**
- * Recomputes ONLY the day_streak from match_daily_activity and persists it.
- * Streak is now used exclusively as a bonus multiplier for points — it does
- * NOT gate stage advancement (that's done by reachingPOINTS_PER_STAGE via tasks).
- *
- * Streak counts consecutive PHT calendar days (UTC+8, Asia/Manila).
- * A day only counts if BOTH sides hit MIN_MESSAGES_PER_VALID_DAY.
- * Today never *breaks* a streak just for being incomplete — it simply
- * doesn't count yet until it's valid.
+ * Recomputes the day_streak by delegating directly to the authoritative conversation streak.
  */
 export async function recomputeStreak(matchId: string): Promise<{ dayStreak: number }> {
-  const [rows, match] = await Promise.all([matchModel.getDailyActivity(matchId), matchModel.getMatchById(matchId)]);
+  const match = await matchModel.getMatchById(matchId);
   if (!match) return { dayStreak: 0 };
-
-  const validDates = new Set(
-    rows
-      .filter((r) => r.user_a_message_count >= MIN_MESSAGES_PER_VALID_DAY && r.user_b_message_count >= MIN_MESSAGES_PER_VALID_DAY)
-      .map((r) => r.activity_date),
-  );
-
-  const today = phtDateStr();
-
-  // Walk backwards from today PHT (or yesterday if today isn't valid yet).
-  let cursor = validDates.has(today) ? today : new Date(new Date().getTime() + 8 * 3600_000 - 86_400_000).toISOString().slice(0, 10);
-  let dayStreak = 0;
-  while (validDates.has(cursor)) {
-    dayStreak += 1;
-    const prev = new Date(`${cursor}T00:00:00+08:00`);
-    prev.setDate(prev.getDate() - 1);
-    cursor = prev.toISOString().slice(0, 10);
+  if (match.conversation_id) {
+    const streakResult = await streakService.getAuthoritativeStreak(match.conversation_id);
+    return { dayStreak: streakResult.dayStreak };
   }
-
-  const newStage = Math.max(match.current_stage, stageForStreak(dayStreak));
-  const stageChanged = newStage !== match.current_stage;
-  const streakChanged = dayStreak !== match.day_streak;
-
-  if (streakChanged || stageChanged) {
-    await matchModel.updateProgression(matchId, newStage, dayStreak);
-
-    const payload = { matchId, dayStreak, stage: newStage };
-    emitToUser(match.user_a_id, 'matchmaking:streak_updated', payload);
-    emitToUser(match.user_b_id, 'matchmaking:streak_updated', payload);
-
-    if (stageChanged) {
-      const stagePayload = {
-        matchId,
-        stage: newStage,
-        stageName: stageName(newStage),
-        dayStreak,
-      };
-      emitToUser(match.user_a_id, 'matchmaking:stage_updated', stagePayload);
-      emitToUser(match.user_b_id, 'matchmaking:stage_updated', stagePayload);
-
-      // Stage 4 (10d streak): Feed unlock in "Allies" filter (remains anonymous until 500 points)
-      if (newStage >= 4) {
-        if (match.conversation_id) {
-          await upgradeConversationToAllied(match.conversation_id).catch(() => {});
-        }
-        await interactionModel.createAllyRelationship(match.user_a_id, match.user_b_id).catch(() => {});
-
-        const unlockPayload = {
-          matchId: match.id,
-          conversationId: match.conversation_id,
-          stage: 4,
-          feedUnlocked: true,
-        };
-        emitToUser(match.user_a_id, 'matchmaking:allies_unlocked', unlockPayload);
-        emitToUser(match.user_b_id, 'matchmaking:allies_unlocked', unlockPayload);
-
-        await Promise.all([
-          interactionModel.createNotification({
-            userId: match.user_a_id,
-            type: 'accepted',
-            title: '🎉 Campus Allies Unlocked!',
-            description:
-              'You reached a 10-day streak! Your feeds are now visible to each other in the Allies filter — still anonymous until 500 points.',
-            fromUserId: match.user_b_id,
-            targetId: match.conversation_id ?? undefined,
-          }),
-          interactionModel.createNotification({
-            userId: match.user_b_id,
-            type: 'accepted',
-            title: '🎉 Campus Allies Unlocked!',
-            description:
-              'You reached a 10-day streak! Your feeds are now visible to each other in the Allies filter — still anonymous until 500 points.',
-            fromUserId: match.user_a_id,
-            targetId: match.conversation_id ?? undefined,
-          }),
-        ]).catch(() => {});
-      }
-    }
-  }
-
-  return { dayStreak };
+  return { dayStreak: match.day_streak ?? 0 };
 }
 
 /** @deprecated Use recomputeStreak() — kept for backward-compat callsites during migration. */

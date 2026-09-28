@@ -66,5 +66,8 @@ router.get('/:id/icebreakers', conversationController.getIcebreakersEnabled);
 // POST /api/conversations/:id/streak/restore — use a restore token
 router.post('/:id/streak/restore', conversationController.restoreStreak);
 
+// GET /api/conversations/:id/streak — fetch authoritative streak state
+router.get('/:id/streak', conversationController.getStreak);
+
 export default router;
 

@@ -21,6 +21,23 @@ import type {
   MessageRow,
 } from '../types/conversation.types';
 
+// Sliding-window memory cache to guarantee message creation idempotency
+interface CachedMessageResult {
+  message: MessageRow;
+  timestamp: number;
+}
+const idempotencyCache = new Map<string, CachedMessageResult>();
+const IDEMPOTENCY_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+function cleanIdempotencyCache() {
+  const now = Date.now();
+  for (const [key, item] of idempotencyCache.entries()) {
+    if (now - item.timestamp > IDEMPOTENCY_TTL_MS) {
+      idempotencyCache.delete(key);
+    }
+  }
+}
+
 /**
  * Tags each conversation with a blockStatus computed from the other
  * member's relationship to userId. Does NOT filter anything out —
@@ -167,17 +184,28 @@ export async function listMyConversations(
     const streak = streakMap.get(conv.id);
     const dayStreak = streak?.dayStreak ?? 0;
     const streakActiveToday = streak?.streakActiveToday ?? false;
+    const streakStatus = streak?.streakStatus ?? 'inactive';
+    const lastQualifyingDate = streak?.lastQualifyingDate ?? null;
+    const expiresAt = streak?.expiresAt ?? null;
     const streakRestoreDeadline = streak?.streakRestoreDeadline ?? null;
     return {
       ...conv,
+      currentStreak: dayStreak,
       dayStreak,
       streakActiveToday,
+      streakStatus,
+      lastQualifyingDate,
+      expiresAt,
       streakRestoreDeadline,
       matchInfo: conv.matchInfo
         ? {
             ...conv.matchInfo,
+            currentStreak: dayStreak,
             dayStreak,
             streakActiveToday,
+            streakStatus,
+            lastQualifyingDate,
+            expiresAt,
             streakRestoreDeadline,
           }
         : null,
@@ -213,17 +241,28 @@ export async function getConversationById(conversationId: string, userId: string
   const streak = streakMap.get(conversationId);
   const dayStreak = streak?.dayStreak ?? 0;
   const streakActiveToday = streak?.streakActiveToday ?? false;
+  const streakStatus = streak?.streakStatus ?? 'inactive';
+  const lastQualifyingDate = streak?.lastQualifyingDate ?? null;
+  const expiresAt = streak?.expiresAt ?? null;
   const streakRestoreDeadline = streak?.streakRestoreDeadline ?? null;
   return {
     ...withVariant,
+    currentStreak: dayStreak,
     dayStreak,
     streakActiveToday,
+    streakStatus,
+    lastQualifyingDate,
+    expiresAt,
     streakRestoreDeadline,
     matchInfo: withVariant.matchInfo
       ? {
           ...withVariant.matchInfo,
+          currentStreak: dayStreak,
           dayStreak,
           streakActiveToday,
+          streakStatus,
+          lastQualifyingDate,
+          expiresAt,
           streakRestoreDeadline,
         }
       : null,
@@ -364,6 +403,12 @@ export async function markConversationRead(
   await markConversationNotificationsRead(conversationId, userId).catch((err) => {
     console.warn('[markConversationRead] Error syncing notifications:', err);
   });
+
+  // Realtime read receipt delivery so sender can update status to 'read'
+  const otherMemberIds = await conversationModel.findOtherMemberIds(conversationId, userId);
+  for (const recipientId of otherMemberIds) {
+    emitToUser(recipientId, 'conversation:read', { conversationId, userId, readAt });
+  }
 }
 
 /**
@@ -416,12 +461,20 @@ export async function sendMessage(input: {
   imageUrl?: string | null;
   imageUrls?: string[] | null;
   replyToMessageId?: string | null;
+  clientMessageId?: string | null;
 }): Promise<MessageRow> {
-  const { conversationId, senderId, content, imageUrl, imageUrls, replyToMessageId } = input;
+  const { conversationId, senderId, content, imageUrl, imageUrls, replyToMessageId, clientMessageId } = input;
 
   const member = await conversationModel.isMember(conversationId, senderId);
   if (!member) {
     throw new HttpError('You are not a member of this conversation', 403);
+  }
+
+  // Idempotency check: if the client retries with the same clientMessageId, return existing message immediately
+  const idempotencyKey = clientMessageId ? `${conversationId}:${senderId}:${clientMessageId}` : null;
+  if (idempotencyKey && idempotencyCache.has(idempotencyKey)) {
+    const cached = idempotencyCache.get(idempotencyKey)!;
+    return cached.message;
   }
 
   if (!content && !imageUrl && (!imageUrls || imageUrls.length === 0)) {
@@ -463,18 +516,30 @@ export async function sendMessage(input: {
   });
   await conversationModel.touchConversation(conversationId);
 
+  const messageWithClient: MessageRow = {
+    ...message,
+    clientMessageId: clientMessageId || null,
+    status: 'sent',
+  };
+
+  if (idempotencyKey) {
+    cleanIdempotencyCache();
+    idempotencyCache.set(idempotencyKey, {
+      message: messageWithClient,
+      timestamp: Date.now(),
+    });
+  }
+
   // A recipient who'd "deleted" this conversation from their list gets it
   // back the moment a new message arrives — same behavior as WhatsApp/
   // Messenger. No-ops (no write) for anyone who hadn't hidden it.
   await Promise.all(otherMemberIds.map((recipientId) => conversationModel.unhideForUser(conversationId, recipientId)));
 
-  // Push to every other member's socket room for instant delivery — this
-  // now runs for every conversation, not just matches. Persistence above
-  // is the source of truth either way; this is purely "don't make the
-  // recipient wait for a poll".
+  // Push to every member's socket room for instant delivery (including sender for multi-device sync)
   for (const recipientId of otherMemberIds) {
-    emitToUser(recipientId, 'conversation:message_new', { conversationId, message });
+    emitToUser(recipientId, 'conversation:message_new', { conversationId, message: messageWithClient });
   }
+  emitToUser(senderId, 'conversation:message_new', { conversationId, message: messageWithClient });
 
   // Streak/stage tracking runs for ALL match-linked conversations —
   // including those that have been revealed (friends). Notifications are
@@ -534,15 +599,14 @@ export async function sendMessage(input: {
   })();
 
 
-  // ── Streak tracking for ALL conversations (PHT calendar day) ──────────────
-  // This runs for every conversation type — regular DMs, anonymous matches,
-  // and revealed matches. The streak service writes to conversation_streaks
-  // (not match-specific tables) so it works universally.
-  void streakService
+  // ── Authoritative streak tracking for ALL conversations (PHT calendar day) ──
+  // Evaluates mutual participation, consecutive days, persists to conversation_streaks,
+  // syncs linked matches, and broadcasts 'conversation:streak_updated'.
+  await streakService
     .recordConversationMessage(conversationId, senderId, [senderId, ...otherMemberIds])
     .catch((err) => console.error('[streak] recordConversationMessage failed:', err));
 
-  return message;
+  return messageWithClient;
 }
 
 /**
@@ -693,4 +757,18 @@ export async function restoreStreakForConversation(
     currentStreak,
     streakLastActivePht,
   );
+}
+
+/**
+ * Returns the authoritative current streak state for a conversation.
+ */
+export async function getAuthoritativeStreak(
+  conversationId: string,
+  userId: string,
+): Promise<import('../models/conversationStreak.model').ConversationStreakResult> {
+  const member = await conversationModel.isMember(conversationId, userId);
+  if (!member) {
+    throw new HttpError('You are not a member of this conversation', 403);
+  }
+  return streakService.getAuthoritativeStreak(conversationId);
 }

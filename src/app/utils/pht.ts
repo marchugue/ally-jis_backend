@@ -37,6 +37,33 @@ export function phtMidnightUtc(dateStr: string): string {
 }
 
 /**
+ * Safe calendar date offset calculation on date strings (YYYY-MM-DD).
+ * Offset by deltaDays (e.g. -1 for previous calendar day, +1 for next).
+ * Uses UTC date components so it is immune to local time, DST, and timezone jumping.
+ */
+export function getCalendarDateOffset(dateStr: string, deltaDays: number): string {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const date = new Date(Date.UTC(y, m - 1, d + deltaDays));
+  return date.toISOString().slice(0, 10);
+}
+
+/**
+ * Returns the end of `dateStr` (YYYY-MM-DD) in UTC — i.e. 23:59:59.999 PHT
+ * expressed as a UTC ISO string.
+ */
+export function phtEndOfDayUtc(dateStr: string): string {
+  return new Date(`${dateStr}T23:59:59.999+08:00`).toISOString();
+}
+
+/**
+ * Returns the start of `dateStr` (YYYY-MM-DD) in UTC — i.e. 00:00:00.000 PHT
+ * expressed as a UTC ISO string.
+ */
+export function phtStartOfDayUtc(dateStr: string): string {
+  return new Date(`${dateStr}T00:00:00.000+08:00`).toISOString();
+}
+
+/**
  * Returns the current hours (0-23) and minutes (0-59) in Philippine Standard Time.
  */
 export function getPhtHoursAndMinutes(now: Date = new Date()): { hours: number; minutes: number; dateStr: string } {

@@ -15,6 +15,7 @@ export interface MessageReactionRow {
 
 export interface MessageRow {
   id: string;
+  clientMessageId?: string | null;
   conversation_id: string;
   sender_id: string;
   content: string | null;
@@ -23,6 +24,7 @@ export interface MessageRow {
   reply_to_message_id?: string | null;
   replied_message?: MessageReplyRow | MessageReplyRow[] | null;
   reactions?: MessageReactionRow[];
+  status?: 'sending' | 'sent' | 'delivered' | 'read' | 'failed';
   /** True when the sender deleted the message for everyone. */
   is_deleted?: boolean;
   deleted_at?: string | null;
@@ -55,9 +57,13 @@ export interface ConversationRow {
   icebreakersEnabled?: boolean;
   variant?: ConversationVariant;
   matchInfo?: ConversationMatchInfo | null;
-  /** PHT-based consecutive-day streak for this conversation (all types). */
+  /** Authoritative PHT-based consecutive-day streak for this conversation. */
+  currentStreak?: number;
   dayStreak?: number;
   streakActiveToday?: boolean;
+  streakStatus?: 'active' | 'at_risk' | 'lapsed' | 'expired' | 'inactive';
+  lastQualifyingDate?: string | null;
+  expiresAt?: string | null;
   /**
    * ISO UTC deadline by which the user can restore a lapsed streak.
    * Null when streak is active, pending, or restore window has already expired.
@@ -72,8 +78,12 @@ export interface ConversationMatchInfo {
   stage: number;
   stagePoints?: number;
   matchPoints?: number;
+  currentStreak?: number;
   dayStreak: number;
   streakActiveToday?: boolean;
+  streakStatus?: 'active' | 'at_risk' | 'lapsed' | 'expired' | 'inactive';
+  lastQualifyingDate?: string | null;
+  expiresAt?: string | null;
   streakRestoreDeadline?: string | null;
   myAlias: string | null;
   myAvatar: string | null;
@@ -111,6 +121,7 @@ export interface SendMessagePayload {
   imageUrl?: string | null;
   imageUrls?: string[] | null;
   replyToMessageId?: string | null;
+  clientMessageId?: string | null;
 }
 
 export interface UpdateIcebreakersPayload {

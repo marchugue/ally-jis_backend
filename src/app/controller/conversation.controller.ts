@@ -99,7 +99,7 @@ export const listMessages = asyncHandler(async (req: Request, res: Response) => 
 // POST /conversations/:id/messages
 export const sendMessage = asyncHandler(async (req: Request, res: Response) => {
   const id = String(req.params.id);
-  const { content, imageUrl, imageUrls, replyToMessageId } = req.body as SendMessagePayload;
+  const { content, imageUrl, imageUrls, replyToMessageId, clientMessageId } = req.body as SendMessagePayload;
 
   const message = await conversationService.sendMessage({
     conversationId: id,
@@ -108,6 +108,7 @@ export const sendMessage = asyncHandler(async (req: Request, res: Response) => {
     imageUrl,
     imageUrls,
     replyToMessageId: replyToMessageId ?? null,
+    clientMessageId: clientMessageId ?? null,
   });
 
   res.status(201).json(message);
@@ -164,5 +165,12 @@ export const deleteMessage = asyncHandler(async (req: Request, res: Response) =>
 export const restoreStreak = asyncHandler(async (req: Request, res: Response) => {
   const conversationId = String(req.params.id);
   const result = await conversationService.restoreStreakForConversation(conversationId, req.userId as string);
+  res.status(200).json(result);
+});
+
+// GET /conversations/:id/streak
+export const getStreak = asyncHandler(async (req: Request, res: Response) => {
+  const conversationId = String(req.params.id);
+  const result = await conversationService.getAuthoritativeStreak(conversationId, req.userId as string);
   res.status(200).json(result);
 });

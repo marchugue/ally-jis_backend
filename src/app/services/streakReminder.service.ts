@@ -1,7 +1,7 @@
 // src/app/services/streakReminder.service.ts
 
 import { supabaseAdmin } from '../../config/supabase';
-import { phtDateStr, phtDateStrOffset, phtMidnightUtc, getPhtHoursAndMinutes } from '../utils/pht';
+import { phtDateStr, getCalendarDateOffset, phtMidnightUtc, getPhtHoursAndMinutes } from '../utils/pht';
 import { sendExpoPushNotification } from './pushNotification.service';
 import { getPushTokens } from '../models/pushToken.model';
 import { emitToUser } from './realtime.service';
@@ -26,7 +26,7 @@ export async function checkAndSendStreakReminders(options?: StreakReminderOption
 }> {
   const force = options?.force ?? false;
   const today = phtDateStr();
-  const yesterday = phtDateStrOffset(-1);
+  const yesterday = getCalendarDateOffset(today, -1);
   console.log(`[StreakReminder] Checking unactivated streaks for PHT date: ${today} (force=${force})`);
 
   // 1. Fetch conversations with an ongoing streak (> 0)
@@ -175,7 +175,7 @@ export async function expireUnactivatedStreaks(): Promise<{
   autoEndedMatches: number;
 }> {
   const today = phtDateStr();
-  const yesterday = phtDateStrOffset(-1);
+  const yesterday = getCalendarDateOffset(today, -1);
   console.log(`[StreakExpiration] Checking streaks to expire for PHT midnight. Today: ${today}, yesterday: ${yesterday}`);
 
   // Fetch all conversations with day_streak > 0
@@ -227,14 +227,17 @@ export async function expireUnactivatedStreaks(): Promise<{
 
     const streakPayload = {
       conversationId,
+      currentStreak: 0,
       dayStreak: 0,
       streakActiveToday: false,
+      streakStatus: 'inactive' as const,
+      lastQualifyingDate: streak.streak_last_active_pht as string | null,
+      expiresAt: null,
       status: 'inactive' as const,
     };
 
     for (const memberId of memberIds) {
       emitToUser(memberId, 'conversation:streak_updated', streakPayload);
-      emitToUser(memberId, 'matchmaking:streak_update', streakPayload);
     }
 
     // 4. Auto-end the anonymous match if it exists and was not chatted yesterday
