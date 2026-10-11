@@ -9,25 +9,59 @@
 //      • Stage 4: 10 days streak (4x multiplier)  → Campus Allies Feed Unlock (Anonymous)
 //
 //   2. PROFILE UNLOCK IS POINTS-BASED:
-//      • 500 total match points required to unlock real profile / identity reveal.
+//      • 250 total match points required to unlock real profile / identity reveal.
 //      • Points are earned via daily tasks (reset at 12:00 AM PHT).
 //      • Higher stages increase the multiplier (1x → 2x → 3x → 4x), accelerating
-//        points accumulation towards the 500 pts profile unlock!
+//        points accumulation towards the 250 pts profile unlock!
 //
 //   3. DAILY TASKS (max 5 tasks total, additive per stage, reset at 12 AM PHT):
 //      • Stage 1+: send_message  (1 pt × multiplier)
 //      • Stage 2+: play_game     (2 pts × multiplier)
 //      • Stage 3+: send_photo    (3 pts × multiplier)
-//      • Stage 4+: all tasks remain active towards 500 pts
+//      • Stage 4+: all tasks remain active towards 250 pts
 
 /** Consecutive daily streak required to enter each stage. */
 export const STAGE_THRESHOLDS = [0, 0, 3, 7, 10] as const;
 
 /** Total match points needed to unlock real profile / identity reveal. */
-export const TOTAL_POINTS_FOR_PROFILE_UNLOCK = 500;
+export const TOTAL_POINTS_FOR_PROFILE_UNLOCK = 250;
 
 /** Backward-compat alias */
-export const POINTS_PER_STAGE = 500;
+export const POINTS_PER_STAGE = 250;
+
+// ── Progressive avatar reveal ────────────────────────────────────────────────
+//
+// The partner's real photo comes into focus gradually as match points grow.
+// Each tier caps how much image information leaves the server: the client
+// only ever receives a tiny down-scaled thumbnail for the current tier, so
+// stripping client-side blur can never leak more detail than earned.
+
+export interface RevealTier {
+  tier: number;
+  /** Inclusive lower bound as a fraction of TOTAL_POINTS_FOR_PROFILE_UNLOCK. */
+  startFraction: number;
+  /** Thumbnail width in px sent to the client (null = no image / full photo). */
+  thumbWidth: number | null;
+}
+
+export const REVEAL_TIERS: RevealTier[] = [
+  { tier: 0, startFraction: 0.0, thumbWidth: null }, // animal only + dominant colour
+  { tier: 1, startFraction: 0.2, thumbWidth: 6 },    // colour fog
+  { tier: 2, startFraction: 0.4, thumbWidth: 12 },   // silhouette
+  { tier: 3, startFraction: 0.6, thumbWidth: 24 },   // blurry face
+  { tier: 4, startFraction: 0.8, thumbWidth: 48 },   // nearly clear
+  { tier: 5, startFraction: 1.0, thumbWidth: null }, // full reveal (real avatarUrl)
+];
+
+export function revealTierFor(points: number, isUnlocked = false): RevealTier {
+  if (isUnlocked) return REVEAL_TIERS[REVEAL_TIERS.length - 1];
+  const fraction = Math.max(0, points) / TOTAL_POINTS_FOR_PROFILE_UNLOCK;
+  let current = REVEAL_TIERS[0];
+  for (const t of REVEAL_TIERS) {
+    if (fraction >= t.startFraction) current = t;
+  }
+  return current;
+}
 
 /** Multiplier per stage. */
 export const STAGE_BASE_MULTIPLIER: Record<number, number> = {
@@ -102,7 +136,7 @@ export interface StageCapabilities {
   /** Stage 4: feed of both users appears in "Allies" newsfeed filter (anonymous). */
   feedUnlocked: boolean;
   isAllies: boolean;
-  /** Identity reveal happens at 500 points (or manual mutual reveal). */
+  /** Identity reveal happens at 250 points (or manual mutual reveal). */
   isRevealed: boolean;
 }
 

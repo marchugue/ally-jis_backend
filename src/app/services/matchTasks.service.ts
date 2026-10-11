@@ -33,6 +33,7 @@ import {
   getTasksForStage,
   getEffectiveMultiplier,
   stageName,
+  revealTierFor,
 } from '../constants/progression';
 import { upgradeConversationToAllied } from '../models/conversation.model';
 
@@ -87,12 +88,17 @@ export async function completeTask(
       stagePoints: result.newStagePoints,
       matchPoints: result.newMatchPoints,
       stage,
+      revealTier: revealTierFor(result.newMatchPoints, Boolean(match.revealed_at)).tier,
+      previousRevealTier: revealTierFor(
+        Math.max(0, result.newMatchPoints - result.pointsAwarded),
+        Boolean(match.revealed_at),
+      ).tier,
     };
     emitToUser(match.user_a_id, 'match:points_updated', payload);
     emitToUser(match.user_b_id, 'match:points_updated', payload);
   }
 
-  // Check if profile should unlock (reaches 500 total points)
+  // Check if profile should unlock (reaches 250 total points)
   let profileUnlocked = false;
   if (result.newMatchPoints >= TOTAL_POINTS_FOR_PROFILE_UNLOCK && !match.revealed_at) {
     profileUnlocked = true;
@@ -107,7 +113,7 @@ export async function completeTask(
 }
 
 /**
- * Automatically unlocks profiles and identities when 500 points are reached.
+ * Automatically unlocks profiles and identities when 250 points are reached.
  */
 async function unlockProfile(match: import('../types/matchmaking.types').MatchRow): Promise<void> {
   await matchModel.revealMatch(match.id).catch(() => {});
@@ -129,7 +135,7 @@ async function unlockProfile(match: import('../types/matchmaking.types').MatchRo
       type: 'accepted',
       title: '🎉 Real Identities Revealed!',
       description:
-        'You reached 500 points together! Real names, avatars, and full profiles are now unlocked.',
+        'You reached 250 points together! Real names, avatars, and full profiles are now unlocked.',
       fromUserId: match.user_b_id,
       targetId: match.conversation_id ?? undefined,
     }),
@@ -138,7 +144,7 @@ async function unlockProfile(match: import('../types/matchmaking.types').MatchRo
       type: 'accepted',
       title: '🎉 Real Identities Revealed!',
       description:
-        'You reached 500 points together! Real names, avatars, and full profiles are now unlocked.',
+        'You reached 250 points together! Real names, avatars, and full profiles are now unlocked.',
       fromUserId: match.user_a_id,
       targetId: match.conversation_id ?? undefined,
     }),

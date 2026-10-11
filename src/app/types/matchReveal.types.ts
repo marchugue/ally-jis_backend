@@ -28,7 +28,7 @@ export interface RevealPartnerView {
   studyCategory?: string | null;
   // Stage 3+
   favoriteHobby?: string | null;
-  // Profile Unlocked (500 pts / revealed_at)
+  // Profile Unlocked (250 pts / revealed_at)
   userId?: string | null;
   fullName?: string | null;
   username?: string | null;
@@ -38,6 +38,27 @@ export interface RevealPartnerView {
   course?: string | null;
 }
 
+/** Progressive real-avatar reveal state for the partner (driven by match points). */
+export interface AvatarRevealView {
+  /** 0 = animal only … 5 = fully revealed. */
+  tier: number;
+  maxTier: number;
+  /** Exact progress 0..1 toward profile unlock (used for in-tier smoothing). */
+  progress: number;
+  matchPoints: number;
+  target: number;
+  /** Points at which the current tier started / the next tier begins. */
+  tierStart: number;
+  tierEnd: number;
+  /** Point thresholds for each tier (for ring tick marks). */
+  tierThresholds: number[];
+  hasPhoto: boolean;
+  /** Dominant colour of the real photo (safe hint for tier 0). */
+  dominantColor: string | null;
+  /** Tier thumbnail data URI (tiers 1–4) or real avatar URL (tier 5). */
+  previewUrl: string | null;
+}
+
 export interface RevealData {
   stage: number;
   stageName: string;
@@ -45,7 +66,7 @@ export interface RevealData {
   targetStreak: number;
   streakProgressPercent: number;
   capabilities: StageCapabilities;
-  // Points progression towards 500pt profile unlock
+  // Points progression towards 250pt profile unlock
   matchPoints: number;
   profileUnlockTarget: number;
   pointsToProfileUnlock: number;
@@ -64,6 +85,7 @@ export interface RevealData {
   dailyTasks: DailyTaskStatus[];
   activeTasks: StageTask[];
   partner: RevealPartnerView;
+  avatarReveal: AvatarRevealView;
 }
 
 export interface TimelinePostView {

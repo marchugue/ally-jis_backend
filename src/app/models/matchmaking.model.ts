@@ -437,7 +437,7 @@ export async function markRevealedIfMatched(userIdA: string, userIdB: string): P
 }
 
 /**
- * Marks a specific match as revealed (profile unlocked at 500 points).
+ * Marks a specific match as revealed (profile unlocked at 250 points).
  */
 export async function revealMatch(matchId: string): Promise<void> {
   const { error } = await supabaseAdmin
@@ -609,7 +609,7 @@ export async function getUnrevealedMatchPartners(
 
   const map = new Map<string, { alias: string; avatar: string }>();
   for (const m of data ?? []) {
-    if ((m as any).match_points >= 500) continue; // Profile unlocked, show real identity
+    if ((m as any).match_points >= 250) continue; // Profile unlocked, show real identity
     const isUserA = m.user_a_id === userId;
     const partnerId = isUserA ? m.user_b_id : m.user_a_id;
     if (targetUserIds.includes(partnerId)) {
@@ -638,7 +638,7 @@ export async function getUnrevealedMatchBetween(
     )
     .in('status', ['chatting', 'confirmed'])
     .is('revealed_at', null)
-    .lt('match_points', 500)
+    .lt('match_points', 250)
     .maybeSingle();
 
   if (error || !data) {
@@ -655,7 +655,7 @@ export async function getUnrevealedMatchBetween(
         ((m.user_a_id === userIdA && m.user_b_id === userIdB) ||
           (m.user_a_id === userIdB && m.user_b_id === userIdA)) &&
         !m.revealed_at &&
-        (m.match_points ?? 0) < 500,
+        (m.match_points ?? 0) < 250,
     );
     return (match as MatchRow) ?? null;
   }

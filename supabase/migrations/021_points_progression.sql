@@ -1,10 +1,8 @@
 -- 021_points_progression.sql
 --
--- Re-engineers the progression system from streak-based to points-based.
--- Streaks are now only a bonus multiplier for points, not the gating mechanism.
---
--- Each stage requires 500 points to advance. Points come from completing
--- daily tasks (reset at 12 AM PHT). Tasks are additive per stage:
+-- Re-engineers the progression system: stages are streak-based (3d, 7d, 10d),
+-- while profile unlock is points-based (250 total points).
+-- Points come from completing daily tasks (reset at 12 AM PHT):
 --   Stage 1: Send 1 message each  (+1 pt × multiplier)
 --   Stage 2: + Play game ≥5 min   (+2 pts × multiplier)
 --   Stage 3: + Send 1 photo each  (+3 pts × multiplier)

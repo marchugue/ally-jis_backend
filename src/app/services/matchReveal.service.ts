@@ -22,6 +22,7 @@ import {
   calculateStreakProgression,
 } from '../constants/progression';
 import { phtDateStr } from '../utils/pht';
+import { buildAvatarReveal } from './avatarReveal.service';
 import type {
   RevealData,
   RevealPartnerView,
@@ -111,6 +112,7 @@ export async function getReveal(matchId: string, userId: string): Promise<Reveal
       dailyTasks: [],
       activeTasks,
       partner: {},
+      avatarReveal: await buildAvatarReveal({ avatarUrl: null, matchPoints, isProfileUnlocked }),
     };
   }
 
@@ -149,7 +151,7 @@ export async function getReveal(matchId: string, userId: string): Promise<Reveal
     partnerView.favoriteHobby = partner?.interests?.[0] ?? null;
   }
 
-  // Profile Unlocked: Real identity revealed when 500 points are reached
+  // Profile Unlocked: Real identity revealed when 250 points are reached
   if (isProfileUnlocked) {
     partnerView.userId = partner?.id ?? null;
     partnerView.fullName = partner?.full_name ?? null;
@@ -182,6 +184,11 @@ export async function getReveal(matchId: string, userId: string): Promise<Reveal
     dailyTasks: dailyTaskStatuses,
     activeTasks,
     partner: partnerView,
+    avatarReveal: await buildAvatarReveal({
+      avatarUrl: partner?.avatar_url ?? null,
+      matchPoints,
+      isProfileUnlocked,
+    }),
   };
 }
 
