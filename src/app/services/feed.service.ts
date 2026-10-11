@@ -66,7 +66,7 @@ async function hydratePosts(viewerId: string, posts: PostRow[]): Promise<PostWit
           department: null,
           course: null,
           interests: null,
-          is_following: false,
+          is_following: isOwn ? false : followingIds.has(post.author_id),
           is_ally: true,
         };
       } else if (isAlly) {
@@ -86,7 +86,7 @@ async function hydratePosts(viewerId: string, posts: PostRow[]): Promise<PostWit
           department: null,
           course: null,
           interests: null,
-          is_following: false,
+          is_following: isOwn ? false : followingIds.has(post.author_id),
           is_ally: false,
         };
       }
