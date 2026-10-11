@@ -6,6 +6,8 @@ import { sendExpoPushNotification } from './pushNotification.service';
 import { getPushTokens } from '../models/pushToken.model';
 import { emitToUser } from './realtime.service';
 import { MIN_MESSAGES_PER_VALID_DAY } from '../models/conversationStreak.model';
+import * as streakModel from '../models/conversationStreak.model';
+import { syncMatchProgression } from './conversationStreak.service';
 
 let lastRunPhtDate: string | null = null;
 let schedulerTimer: NodeJS.Timeout | null = null;
@@ -136,6 +138,17 @@ export async function checkAndSendStreakReminders(options?: StreakReminderOption
         }
       }
 
+      // Check user preferences for streak reminder opt-out
+      try {
+        const { getUserPreferences } = await import('../models/userPreferences.model');
+        const prefs = await getUserPreferences(userId);
+        if (prefs && prefs.notify_streak_reminders === false) {
+          continue;
+        }
+      } catch (prefErr) {
+        // Non-blocking: proceed if preference fetch fails
+      }
+
       const notifTitle = 'Streak Reminder 🔥';
       const notifDesc = 'Your streak is not yet activated! Send a message to activate.';
 
@@ -167,8 +180,9 @@ let lastRunMidnightPhtDate: string | null = null;
  * 2. Auto-ends the associated anonymous match (if any) when neither participant
  *    chatted that day — so users see the conversation close automatically.
  *
- * Emits 'conversation:streak_updated' (dayStreak: 0, status: 'inactive')
- * and 'matchmaking:match_ended' to all affected members.
+ * Emits 'conversation:streak_updated' (dayStreak: 0, status: 'lapsed'/'expired')
+ * and 'conversation:streak_event' to all affected members.
+ * Note: Matches are NEVER automatically ended; users decide whether to end them.
  */
 export async function expireUnactivatedStreaks(): Promise<{
   expiredCount: number;
@@ -195,29 +209,39 @@ export async function expireUnactivatedStreaks(): Promise<{
     (row) => row.streak_last_active_pht !== yesterday && row.streak_last_active_pht !== today
   );
 
-  console.log(`[StreakExpiration] Found ${expiredStreaks.length} streak(s) to reset to inactive.`);
+  console.log(`[StreakExpiration] Found ${expiredStreaks.length} streak(s) to transition to lapsed/expired.`);
 
   let expiredCount = 0;
-  let autoEndedMatches = 0;
 
   for (const streak of expiredStreaks) {
     const conversationId = streak.conversation_id as string;
+    const lastActivePht = streak.streak_last_active_pht as string | null;
 
-    // 1. Reset conversation_streaks in DB
-    await supabaseAdmin
-      .from('conversation_streaks')
-      .update({ day_streak: 0, updated_at: new Date().toISOString() })
-      .eq('conversation_id', conversationId);
+    // 1. Mark streak as lapsed in DB (remembers count for 42h restore and writes 'ended' event)
+    let lapsedEvent: streakModel.StreakEventRow | null = null;
+    if (lastActivePht && streak.day_streak > 0) {
+      try {
+        lapsedEvent = await streakModel.markStreakLapsed(
+          conversationId,
+          streak.day_streak,
+          lastActivePht,
+        );
+      } catch (err) {
+        console.error(`[StreakExpiration] Error recording lapsed streak for ${conversationId}:`, err);
+      }
+    } else {
+      await supabaseAdmin
+        .from('conversation_streaks')
+        .update({ day_streak: 0, updated_at: new Date().toISOString() })
+        .eq('conversation_id', conversationId);
+    }
 
-    // 2. Check if this conversation has an active anonymous match to auto-end
-    const { data: matchRow } = await supabaseAdmin
-      .from('matches')
-      .select('id, user_a_id, user_b_id, status, conversation_id')
-      .eq('conversation_id', conversationId)
-      .in('status', ['chatting', 'confirmed'])
-      .maybeSingle();
+    // 2. Synchronize day_streak AND level in matches table if linked match exists.
+    //    The level ends together with the streak (Lv.4 Campus Allies is permanent).
+    // NOTE: NEVER auto-end matches when streak ends! Matches only end when user explicitly chooses to end them.
+    await syncMatchProgression(conversationId, 0, lastActivePht);
 
-    // 3. Get members to broadcast realtime inactive status
+    // 3. Get members to broadcast realtime lapsed/inactive status and streak event
     const { data: members } = await supabaseAdmin
       .from('conversation_members')
       .select('user_id')
@@ -225,103 +249,43 @@ export async function expireUnactivatedStreaks(): Promise<{
 
     const memberIds = (members ?? []).map((m) => m.user_id as string);
 
+    let streakStatus: streakModel.StreakStatus = 'inactive';
+    let expiresAt: string | null = null;
+    let streakRestoreDeadline: string | null = null;
+
+    if (lastActivePht) {
+      const deadline = streakModel.computeRestoreDeadline(lastActivePht);
+      const isRestorable = deadline.getTime() > Date.now();
+      streakStatus = isRestorable ? 'lapsed' : 'expired';
+      expiresAt = isRestorable ? deadline.toISOString() : null;
+      streakRestoreDeadline = isRestorable ? deadline.toISOString() : null;
+    }
+
     const streakPayload = {
       conversationId,
       currentStreak: 0,
       dayStreak: 0,
       streakActiveToday: false,
-      streakStatus: 'inactive' as const,
-      lastQualifyingDate: streak.streak_last_active_pht as string | null,
-      expiresAt: null,
-      status: 'inactive' as const,
+      streakStatus,
+      lastQualifyingDate: lastActivePht,
+      expiresAt,
+      streakRestoreDeadline,
+      lapsedStreak: streak.day_streak,
+      status: streakStatus,
     };
 
     for (const memberId of memberIds) {
       emitToUser(memberId, 'conversation:streak_updated', streakPayload);
-    }
-
-    // 4. Auto-end the anonymous match if it exists and was not chatted yesterday
-    if (matchRow) {
-      // Check if anyone sent a message yesterday in this conversation
-      const { data: yesterdayActivity } = await supabaseAdmin
-        .from('conversation_daily_activity')
-        .select('user_id, message_count')
-        .eq('conversation_id', conversationId)
-        .eq('activity_date', yesterday);
-
-      const anyActivityYesterday = (yesterdayActivity ?? []).some((r) => r.message_count > 0);
-
-      if (!anyActivityYesterday) {
-        console.log(`[StreakExpiration] Auto-ending match ${matchRow.id} for conversation ${conversationId} — no activity yesterday.`);
-
-        // Mark match as ended
-        await supabaseAdmin
-          .from('matches')
-          .update({ status: 'ended', updated_at: new Date().toISOString() })
-          .eq('id', matchRow.id);
-
-        // Also reset matches day_streak
-        await supabaseAdmin
-          .from('matches')
-          .update({ day_streak: 0 })
-          .eq('id', matchRow.id);
-
-        // Emit match_ended to both participants
-        const matchEndPayload = { matchId: matchRow.id, conversationId, reason: 'midnight_auto_end' };
-        for (const memberId of memberIds) {
-          emitToUser(memberId, 'matchmaking:match_ended', matchEndPayload);
-        }
-
-        autoEndedMatches++;
+      if (lapsedEvent) {
+        emitToUser(memberId, 'conversation:streak_event', lapsedEvent);
       }
     }
 
     expiredCount++;
   }
 
-  // 5. Also auto-end any other active matches where no one chatted yesterday (even if day_streak was 0)
-  const { data: activeMatches } = await supabaseAdmin
-    .from('matches')
-    .select('id, user_a_id, user_b_id, status, conversation_id, confirmed_at, created_at')
-    .in('status', ['chatting', 'confirmed']);
-
-  for (const m of activeMatches ?? []) {
-    if (!m.conversation_id) continue;
-
-    // Grace period: do not auto-end matches created within the last 2 hours
-    const matchTime = new Date(m.confirmed_at || m.created_at || 0).getTime();
-    if (Date.now() - matchTime < 2 * 60 * 60 * 1000) continue;
-
-    const { data: yAct } = await supabaseAdmin
-      .from('conversation_daily_activity')
-      .select('user_id, message_count')
-      .eq('conversation_id', m.conversation_id)
-      .eq('activity_date', yesterday);
-
-    const hadChatYesterday = (yAct ?? []).some((r) => r.message_count > 0);
-    if (!hadChatYesterday) {
-      console.log(`[StreakExpiration] Auto-ending match ${m.id} (conv: ${m.conversation_id}) — no messages sent yesterday.`);
-
-      await supabaseAdmin
-        .from('matches')
-        .update({ status: 'ended', updated_at: new Date().toISOString() })
-        .eq('id', m.id);
-
-      await supabaseAdmin
-        .from('matches')
-        .update({ day_streak: 0 })
-        .eq('id', m.id);
-
-      const endPayload = { matchId: m.id, conversationId: m.conversation_id, reason: 'midnight_auto_end' };
-      emitToUser(m.user_a_id, 'matchmaking:match_ended', endPayload);
-      emitToUser(m.user_b_id, 'matchmaking:match_ended', endPayload);
-
-      autoEndedMatches++;
-    }
-  }
-
-  console.log(`[StreakExpiration] Done. Expired: ${expiredCount}, auto-ended matches: ${autoEndedMatches}.`);
-  return { expiredCount, autoEndedMatches };
+  console.log(`[StreakExpiration] Done. Expired/lapsed: ${expiredCount}. Matches were NOT ended.`);
+  return { expiredCount, autoEndedMatches: 0 };
 }
 
 /**

@@ -63,8 +63,16 @@ export async function uploadChatMedia(input: {
   if (input.conversationId) {
     const { getMatchByConversationId } = await import('../models/matchmaking.model');
     const match = await getMatchByConversationId(input.conversationId);
-    if (match && !match.revealed_at && match.current_stage < 3) {
-      throw new HttpError('Image and media sharing is locked until Stage 3 of the Ally Roadmap', 403);
+    if (match && !match.revealed_at) {
+      const { getAuthoritativeStreak } = await import('./conversationStreak.service');
+      const { resolveStageForStreak } = await import('../constants/progression');
+      const streak = await getAuthoritativeStreak(input.conversationId).catch(() => null);
+      const liveStage = streak
+        ? resolveStageForStreak(match.current_stage, streak.dayStreak)
+        : match.current_stage;
+      if (liveStage < 3) {
+        throw new HttpError('Image and media sharing is locked until Stage 3 of the Ally Roadmap', 403);
+      }
     }
   }
 

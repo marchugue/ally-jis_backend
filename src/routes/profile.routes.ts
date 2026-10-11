@@ -18,6 +18,12 @@ const router = Router();
 // GET /api/profiles/me
 router.get('/me', authMiddleware, profileController.getMe);
 
+// GET /api/profiles/me/preferences
+router.get('/me/preferences', authMiddleware, profileController.getPreferences);
+
+// PATCH /api/profiles/me/preferences
+router.patch('/me/preferences', authMiddleware, profileController.updatePreferences);
+
 // PATCH /api/profiles/me
 router.patch('/me', authMiddleware, profileController.updateMe);
 

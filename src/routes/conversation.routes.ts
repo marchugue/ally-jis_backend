@@ -69,5 +69,8 @@ router.post('/:id/streak/restore', conversationController.restoreStreak);
 // GET /api/conversations/:id/streak — fetch authoritative streak state
 router.get('/:id/streak', conversationController.getStreak);
 
+// GET /api/conversations/:id/streak/events — fetch streak timeline events
+router.get('/:id/streak/events', conversationController.getStreakEvents);
+
 export default router;
 

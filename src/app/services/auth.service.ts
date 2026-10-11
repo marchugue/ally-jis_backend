@@ -254,7 +254,21 @@ export async function login(payload: LoginPayload): Promise<AuthSession> {
   }
 
   const profile = await authModel.findProfileById(data.user.id);
-  return buildAuthSession({ user: data.user, session: data.session, profile });
+  const sessionResult = buildAuthSession({ user: data.user, session: data.session, profile });
+
+  // Record login activity
+  try {
+    const { recordActivity } = await import('./activityLog.service');
+    recordActivity({
+      userId: data.user.id,
+      bucket: 'security',
+      action: 'auth:login',
+      title: 'Logged in to your account',
+      targetType: 'security',
+    });
+  } catch {}
+
+  return sessionResult;
 }
 
 export async function logout(accessToken: string): Promise<void> {
@@ -303,6 +317,18 @@ export async function changePassword(input: { userId: string; accessToken: strin
   }
 
   await authModel.resetPasswordWithToken(accessToken, newPassword);
+
+  // Record password change activity
+  try {
+    const { recordActivity } = await import('./activityLog.service');
+    recordActivity({
+      userId,
+      bucket: 'security',
+      action: 'security:password_changed',
+      title: 'Updated account password',
+      targetType: 'security',
+    });
+  } catch {}
 }
 
 export async function getSession(accessToken: string): Promise<AuthSession> {

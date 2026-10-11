@@ -20,6 +20,18 @@ export async function blockUser(currentUserId: string, blockedUserId: string): P
   const block = await moderationModel.createBlock(currentUserId, blockedUserId);
   await moderationModel.deleteInteractionsBetween(currentUserId, blockedUserId);
 
+  try {
+    const { recordActivity } = await import('./activityLog.service');
+    recordActivity({
+      userId: currentUserId,
+      bucket: 'safety',
+      action: 'safety:user_blocked',
+      title: 'Blocked a user',
+      targetType: 'profile',
+      targetId: blockedUserId,
+    });
+  } catch {}
+
   return { success: true, blockedAt: block.created_at };
 }
 
@@ -47,6 +59,19 @@ export async function checkIsBlocked(userId: string, otherUserId: string): Promi
  */
 export async function unblockUser(currentUserId: string, blockedUserId: string): Promise<UnblockUserResult> {
   await moderationModel.deleteBlock(currentUserId, blockedUserId);
+
+  try {
+    const { recordActivity } = await import('./activityLog.service');
+    recordActivity({
+      userId: currentUserId,
+      bucket: 'safety',
+      action: 'safety:user_unblocked',
+      title: 'Unblocked a user',
+      targetType: 'profile',
+      targetId: blockedUserId,
+    });
+  } catch {}
+
   return { success: true };
 }
 

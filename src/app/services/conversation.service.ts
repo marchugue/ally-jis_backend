@@ -9,7 +9,7 @@ import * as streakModel from '../models/conversationStreak.model';
 import { supabaseAdmin } from '../../config/supabase';
 import { emitToUser } from './realtime.service';
 import { HttpError } from '../types/auth.types';
-import { getStageCapabilities } from '../constants/progression';
+import { getStageCapabilities, resolveStageForStreak } from '../constants/progression';
 import * as interactionModel from '../models/interaction.model';
 import type {
   ConversationIdResponse,
@@ -73,6 +73,51 @@ function attachIcebreakersEnabled(conversations: ConversationRow[], userId: stri
 
 const TERMINAL_MATCH_STATUSES = new Set(['declined', 'timed_out', 'expired', 'ended']);
 
+/** Live stage for a match — derived from the authoritative conversation streak. */
+async function getLiveMatchStage(conversationId: string, storedStage: number): Promise<number> {
+  try {
+    const streak = await streakService.getAuthoritativeStreak(conversationId);
+    return resolveStageForStreak(storedStage, streak.dayStreak);
+  } catch {
+    return storedStage;
+  }
+}
+
+/**
+ * Ensures every match's stage/day streak reflects the live conversation streak.
+ * Mutates the lookup map in place and heals stale match rows in the background.
+ * Lv.4 (Campus Allies) is permanent — see resolveStageForStreak().
+ */
+async function reconcileMatchStages(
+  matchInfoByConversation: Map<string, matchModel.ConversationMatchLookup>,
+): Promise<void> {
+  const ids = [...matchInfoByConversation.entries()]
+    .filter(([, m]) => !m.revealedAt && (m.currentStage ?? 1) < 4)
+    .map(([id]) => id);
+  if (ids.length === 0) return;
+
+  let streaks: Map<string, streakModel.ConversationStreakResult>;
+  try {
+    streaks = await streakModel.getStreaksForConversations(ids);
+  } catch (err) {
+    console.error('[ConversationService] Failed to reconcile match stages:', err);
+    return;
+  }
+
+  for (const id of ids) {
+    const match = matchInfoByConversation.get(id)!;
+    const liveStreak = streaks.get(id)?.dayStreak ?? 0;
+    const effectiveStage = resolveStageForStreak(match.currentStage, liveStreak);
+    if (effectiveStage === match.currentStage && liveStreak === match.dayStreak) continue;
+
+    match.currentStage = effectiveStage;
+    match.dayStreak = liveStreak;
+    void streakService
+      .syncMatchProgression(id, liveStreak, streaks.get(id)?.lastQualifyingDate ?? null)
+      .catch(() => {});
+  }
+}
+
 /**
  * The one place a conversation's variant is decided, and the one place
  * real profile data gets stripped for a conversation that hasn't been
@@ -91,6 +136,10 @@ async function attachVariant(conversations: ConversationRow[], userId: string): 
     conversations.map((c) => c.id),
     userId,
   );
+
+  // Level follows the live streak — reconcile any stale stage (e.g. a streak
+  // that ended while the match row still says Lv.3) before building matchInfo.
+  await reconcileMatchStages(matchInfoByConversation);
 
   return conversations.map((conv) => {
     const convType = (conv as any).type as 'anonymous' | 'allied' | undefined;
@@ -485,7 +534,7 @@ export async function sendMessage(input: {
   const hasImages = Boolean(imageUrl || (imageUrls && imageUrls.length > 0));
   if (hasImages) {
     const match = await matchModel.getMatchByConversationId(conversationId);
-    if (match && !match.revealed_at && match.current_stage < 3) {
+    if (match && !match.revealed_at && (await getLiveMatchStage(conversationId, match.current_stage)) < 3) {
       throw new HttpError('Image and media sharing is locked until Stage 3 of the Ally Roadmap', 403);
     }
   }
@@ -745,30 +794,43 @@ export async function restoreStreakForConversation(
   if (memErr) throw memErr;
   const allMemberIds = (memberRows ?? []).map((m: { user_id: string }) => m.user_id);
 
-  // Get the current stored streak (may be 0 if lapsed) + last active PHT date
-  const currentRow = await streakModel.getStreak(conversationId);
-  const currentStreak = currentRow?.day_streak ?? 0;
-  const streakLastActivePht = currentRow?.streak_last_active_pht ?? null;
-
   return streakService.restoreConversationStreak(
     conversationId,
     userId,
     allMemberIds,
-    currentStreak,
-    streakLastActivePht,
   );
 }
 
 /**
- * Returns the authoritative current streak state for a conversation.
+ * Returns the authoritative current streak state for a conversation,
+ * including the caller's remaining restore tokens for the current month.
  */
 export async function getAuthoritativeStreak(
   conversationId: string,
   userId: string,
-): Promise<import('../models/conversationStreak.model').ConversationStreakResult> {
+): Promise<import('../models/conversationStreak.model').ConversationStreakResult & { userRestoresRemaining: number }> {
   const member = await conversationModel.isMember(conversationId, userId);
   if (!member) {
     throw new HttpError('You are not a member of this conversation', 403);
   }
-  return streakService.getAuthoritativeStreak(conversationId);
+  const streak = await streakService.getAuthoritativeStreak(conversationId);
+  const userRestoresRemaining = await streakService.getRestoreTokens(userId);
+  return {
+    ...streak,
+    userRestoresRemaining,
+  };
+}
+
+/**
+ * Returns recent streak events for a conversation (for inline timeline rendering).
+ */
+export async function getStreakEvents(
+  conversationId: string,
+  userId: string,
+): Promise<import('../models/conversationStreak.model').StreakEventRow[]> {
+  const member = await conversationModel.isMember(conversationId, userId);
+  if (!member) {
+    throw new HttpError('You are not a member of this conversation', 403);
+  }
+  return streakService.getStreakEvents(conversationId);
 }

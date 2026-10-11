@@ -37,6 +37,51 @@ async function getUnreadBadgeCount(userId: string): Promise<number> {
   }
 }
 
+function isWithinQuietHours(start: string, end: string): boolean {
+  if (!start || !end) return false;
+  try {
+    const phtDate = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Manila' }));
+    const currentMinutes = phtDate.getHours() * 60 + phtDate.getMinutes();
+
+    const [sH, sM] = start.split(':').map(Number);
+    const [eH, eM] = end.split(':').map(Number);
+    const startMinutes = (sH || 0) * 60 + (sM || 0);
+    const endMinutes = (eH || 0) * 60 + (eM || 0);
+
+    if (startMinutes <= endMinutes) {
+      return currentMinutes >= startMinutes && currentMinutes < endMinutes;
+    } else {
+      return currentMinutes >= startMinutes || currentMinutes < endMinutes;
+    }
+  } catch {
+    return false;
+  }
+}
+
+async function canSendPush(
+  recipientId: string,
+  category: 'messages' | 'requests' | 'confessions'
+): Promise<boolean> {
+  try {
+    const { getUserPreferences } = await import('../models/userPreferences.model');
+    const prefs = await getUserPreferences(recipientId);
+    if (!prefs) return true;
+
+    if (prefs.quiet_hours_enabled && isWithinQuietHours(prefs.quiet_hours_start, prefs.quiet_hours_end)) {
+      return false;
+    }
+
+    if (category === 'messages' && prefs.notify_chat_messages === false) return false;
+    if (category === 'requests' && prefs.notify_match_found === false) return false;
+    if (category === 'confessions' && prefs.notify_feed_activity === false) return false;
+
+    return true;
+  } catch {
+    return true;
+  }
+}
+
+
 /**
  * Embeds JSON metadata in HTML comment prefix within the description.
  * This guarantees 100% database schema backward-compatibility across all environments.
@@ -246,6 +291,7 @@ export async function dispatchMessageNotification(input: {
 
   // ── Push Notification dispatch (Allowed: updates existing card) ──────────
   try {
+    if (!(await canSendPush(recipientId, 'messages'))) return;
     const tokenMap = await getPushTokens([recipientId]);
     const pushToken = tokenMap.get(recipientId);
     if (pushToken) {
@@ -369,6 +415,7 @@ export async function dispatchConnectionRequestNotification(input: {
 
   // Standalone push notification
   try {
+    if (!(await canSendPush(recipientId, 'requests'))) return;
     const tokenMap = await getPushTokens([recipientId]);
     const pushToken = tokenMap.get(recipientId);
     if (pushToken) {
@@ -489,6 +536,7 @@ export async function dispatchConnectionAcceptedNotification(input: {
 
   // Push notification: replaces previous connection notification
   try {
+    if (!(await canSendPush(recipientId, 'requests'))) return;
     const tokenMap = await getPushTokens([recipientId]);
     const pushToken = tokenMap.get(recipientId);
     if (pushToken) {
@@ -592,6 +640,7 @@ export async function dispatchAllyMatchedNotification(input: {
   emitToUser(recipientId, 'notification:new', clientRow);
 
   try {
+    if (!(await canSendPush(recipientId, 'requests'))) return;
     const tokenMap = await getPushTokens([recipientId]);
     const pushToken = tokenMap.get(recipientId);
     if (pushToken) {

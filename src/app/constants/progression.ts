@@ -129,6 +129,22 @@ export function stageForStreak(days: number): number {
   return 1;
 }
 
+/** Stage at which the match becomes Campus Allies — a permanent milestone. */
+export const PERMANENT_STAGE = 4;
+
+/**
+ * Authoritative stage for a match given its live day streak.
+ *
+ * Levels 1–3 follow the streak: when a streak ends (dayStreak → 0) the level
+ * drops back with it, and a streak restore brings it back. Once a match has
+ * reached Lv.4 (Campus Allies — conversation upgraded + ally relationship
+ * created) the level is permanent and never decreases.
+ */
+export function resolveStageForStreak(currentStage: number | null | undefined, dayStreak: number): number {
+  if ((currentStage ?? 1) >= PERMANENT_STAGE) return PERMANENT_STAGE;
+  return stageForStreak(dayStreak);
+}
+
 export function stageName(stage: number): string {
   return STAGE_NAMES[stage] ?? STAGE_NAMES[1];
 }

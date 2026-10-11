@@ -383,6 +383,22 @@ export async function createPost(
   }
 
   const [hydrated] = await hydratePosts(authorId, [post]);
+
+  // Record user activity
+  try {
+    const { recordActivity } = await import('./activityLog.service');
+    recordActivity({
+      userId: authorId,
+      bucket: 'content',
+      action: 'post:created',
+      title: post.audience === 'connections' ? 'Shared a post with Allies' : 'Shared a campus post',
+      summary: content ? (content.length > 80 ? content.slice(0, 77) + '...' : content) : 'Shared photo post',
+      targetType: 'post',
+      targetId: post.id,
+      metadata: { audience: post.audience, hasMedia: mediaUrls.length > 0 },
+    });
+  } catch {}
+
   return hydrated;
 }
 
@@ -480,6 +496,20 @@ export async function likePost(userId: string, postId: string): Promise<LikeStat
   }
 
   const likesCount = await feedModel.getPostLikesCount(postId);
+
+  // Record reaction activity
+  try {
+    const { recordActivity } = await import('./activityLog.service');
+    recordActivity({
+      userId,
+      bucket: 'content',
+      action: 'reaction:added',
+      title: 'Liked a campus post',
+      targetType: 'post',
+      targetId: postId,
+    });
+  } catch {}
+
   return { liked: true, likesCount };
 }
 
@@ -675,6 +705,22 @@ export async function createComment(
   }
 
   const [hydrated] = await hydrateComments(authorId, [comment]);
+
+  // Record comment activity
+  try {
+    const { recordActivity } = await import('./activityLog.service');
+    recordActivity({
+      userId: authorId,
+      bucket: 'content',
+      action: 'comment:created',
+      title: parentCommentId ? 'Replied to a comment' : 'Commented on a campus post',
+      summary: contentPreview ? (contentPreview.length > 80 ? contentPreview.slice(0, 77) + '...' : contentPreview) : null,
+      targetType: 'comment',
+      targetId: comment.id,
+      metadata: { postId, parentCommentId },
+    });
+  } catch {}
+
   return hydrated;
 }
 

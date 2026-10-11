@@ -48,25 +48,51 @@ export async function findOnlineUserIds(): Promise<string[]> {
   const cutoffMs = now - ONLINE_WINDOW_SECONDS * 1000;
   const client = getRedisClient();
 
+  let rawUserIds: string[] = [];
+
   if (client && isRedisConnected()) {
     try {
       // Asynchronously prune expired entries older than the cutoff
       client.zremrangebyscore(PRESENCE_KEY, '-inf', cutoffMs).catch(() => {});
       // Return active user IDs within the time window
-      const activeIds = await client.zrangebyscore(PRESENCE_KEY, cutoffMs, '+inf');
-      return activeIds;
+      rawUserIds = await client.zrangebyscore(PRESENCE_KEY, cutoffMs, '+inf');
     } catch (err) {
       console.warn('[Presence] Redis online check error, falling back to DB:', (err as Error).message);
     }
   }
 
-  // Database fallback
-  const cutoff = new Date(cutoffMs).toISOString();
-  const { data, error } = await supabaseAdmin
-    .from('user_presence')
-    .select('user_id')
-    .gte('last_seen_at', cutoff);
+  if (rawUserIds.length === 0) {
+    // Database fallback
+    const cutoff = new Date(cutoffMs).toISOString();
+    const { data, error } = await supabaseAdmin
+      .from('user_presence')
+      .select('user_id')
+      .gte('last_seen_at', cutoff);
 
-  if (error) throw error;
-  return (data ?? []).map((row) => row.user_id as string);
+    if (error) throw error;
+    rawUserIds = (data ?? []).map((row) => row.user_id as string);
+  }
+
+  if (rawUserIds.length === 0) {
+    return [];
+  }
+
+  // Filter out users who disabled show_online_status
+  try {
+    const { data: hiddenRows } = await supabaseAdmin
+      .from('user_preferences')
+      .select('user_id')
+      .in('user_id', rawUserIds)
+      .eq('show_online_status', false);
+
+    if (hiddenRows && hiddenRows.length > 0) {
+      const hiddenSet = new Set(hiddenRows.map((r) => r.user_id));
+      return rawUserIds.filter((id) => !hiddenSet.has(id));
+    }
+  } catch (err) {
+    // Non-blocking fallback
+  }
+
+  return rawUserIds;
 }
+

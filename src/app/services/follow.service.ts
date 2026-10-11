@@ -22,10 +22,34 @@ export async function followUser(userId: string, targetUserId: string): Promise<
     fromUserId: userId,
     targetId: userId,
   });
+
+  try {
+    const { recordActivity } = await import('./activityLog.service');
+    recordActivity({
+      userId,
+      bucket: 'connections',
+      action: 'user:followed',
+      title: 'Followed a student',
+      targetType: 'profile',
+      targetId: targetUserId,
+    });
+  } catch {}
 }
 
 export async function unfollowUser(userId: string, targetUserId: string): Promise<void> {
   await followModel.unfollow(userId, targetUserId);
+
+  try {
+    const { recordActivity } = await import('./activityLog.service');
+    recordActivity({
+      userId,
+      bucket: 'connections',
+      action: 'user:unfollowed',
+      title: 'Unfollowed a student',
+      targetType: 'profile',
+      targetId: targetUserId,
+    });
+  } catch {}
 }
 
 export async function getFollowStatus(userId: string, targetUserId: string): Promise<FollowStatusResponse> {

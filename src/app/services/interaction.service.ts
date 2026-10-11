@@ -72,6 +72,18 @@ export async function requestConnection(userId: string, targetUserId: string): P
   }
 
   await matchmakingService.requestDirectMatch(userId, targetUserId);
+
+  try {
+    const { recordActivity } = await import('./activityLog.service');
+    recordActivity({
+      userId,
+      bucket: 'connections',
+      action: 'ally:requested',
+      title: 'Sent an Ally connection request',
+      targetType: 'profile',
+      targetId: targetUserId,
+    });
+  } catch {}
 }
 
 /**
@@ -113,6 +125,18 @@ export async function acceptConnection(
     conversationId: result.conversationId,
   });
 
+
+  try {
+    const { recordActivity } = await import('./activityLog.service');
+    recordActivity({
+      userId: currentUserId,
+      bucket: 'connections',
+      action: 'ally:connected',
+      title: 'Accepted Ally connection request',
+      targetType: 'profile',
+      targetId: requesterId,
+    });
+  } catch {}
 
   return { conversationId: result.conversationId };
 }
@@ -178,6 +202,18 @@ export async function cancelRequest(userId: string, targetUserId: string): Promi
  */
 export async function removeAlly(userId: string, targetUserId: string): Promise<void> {
   await interactionModel.removeAllyRows(userId, targetUserId);
+
+  try {
+    const { recordActivity } = await import('./activityLog.service');
+    recordActivity({
+      userId,
+      bucket: 'connections',
+      action: 'ally:removed',
+      title: 'Removed an Ally connection',
+      targetType: 'profile',
+      targetId: targetUserId,
+    });
+  } catch {}
 }
 
 /**

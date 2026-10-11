@@ -13,6 +13,7 @@ import moderationRoutes from './moderation.routes';
 import matchRoutes from './matchmaking.routes';
 import followRoutes from './follow.routes';
 import adminRoutes from './admin.routes';
+import activityLogRoutes from './activityLog.routes';
 import { maintenanceMiddleware } from '../app/middleware/maintenance.middleware';
 import { anonymityMiddleware } from '../app/middleware/anonymity.middleware';
 
@@ -37,5 +38,8 @@ router.use('/matchmaking', matchRoutes);
 router.use('/follows', followRoutes);
 router.use('/follow', followRoutes);
 router.use('/admin', adminRoutes);
+router.use('/activity-logs', activityLogRoutes);
+router.use('/activity-log', activityLogRoutes);
+
 
 export default router;

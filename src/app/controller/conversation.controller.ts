@@ -174,3 +174,10 @@ export const getStreak = asyncHandler(async (req: Request, res: Response) => {
   const result = await conversationService.getAuthoritativeStreak(conversationId, req.userId as string);
   res.status(200).json(result);
 });
+
+// GET /conversations/:id/streak/events
+export const getStreakEvents = asyncHandler(async (req: Request, res: Response) => {
+  const conversationId = String(req.params.id);
+  const result = await conversationService.getStreakEvents(conversationId, req.userId as string);
+  res.status(200).json(result);
+});

@@ -14,8 +14,11 @@ import { phtDateStr, phtDateStrOffset, getCalendarDateOffset, phtEndOfDayUtc } f
 export const MIN_MESSAGES_PER_VALID_DAY = 1;
 export const MIN_PARTICIPANTS_PER_VALID_DAY = 2; // both sides must have sent messages
 
-/** Maximum restore tokens a user can hold. */
+/** Restore allowance per user per PHT calendar month. */
 export const MAX_STREAK_RESTORES = 5;
+
+/** Hours a broken streak stays restorable, counted from the moment it breaks. */
+export const RESTORE_WINDOW_HOURS = 42;
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -29,7 +32,24 @@ export interface ConversationStreakRow {
   conversation_id: string;
   day_streak: number;
   streak_last_active_pht: string | null;
+  /** Count of the most recently broken streak, kept so it can be restored exactly. */
+  lapsed_streak?: number | null;
+  /** Last qualifying PHT day of the broken streak (deadline anchor). */
+  lapsed_last_active_pht?: string | null;
   updated_at: string;
+}
+
+export type StreakEventType = 'ended' | 'restored';
+
+export interface StreakEventRow {
+  id: string;
+  conversation_id: string;
+  event_type: StreakEventType;
+  streak_count: number;
+  actor_id: string | null;
+  last_active_pht: string | null;
+  restore_deadline: string | null;
+  created_at: string;
 }
 
 // ─── Write ────────────────────────────────────────────────────────────────────
@@ -112,56 +132,52 @@ export interface ConversationStreakResult {
   lastQualifyingDate: string | null;
   expiresAt: string | null;
   /**
-   * ISO UTC timestamp — the deadline by which the user can still restore a
-   * lapsed streak (streak_last_active_pht + 1 day at midnight PHT + 42 hours).
-   * Present only when the streak has lapsed (dayStreak === 0 and a prior
-   * streak existed). Null otherwise.
+   * ISO UTC timestamp — the deadline by which a lapsed streak can still be
+   * restored. Present only while a broken streak exists. Null otherwise.
    */
   streakRestoreDeadline: string | null;
+  /** The count a restore would bring back (0 when nothing is restorable). */
+  lapsedStreak?: number;
+}
+
+/** Midnight PHT at the END of the missed day — the moment a streak breaks. */
+export function computeStreakBrokeAt(streakLastActivePht: string): Date {
+  const brokeDateStr = getCalendarDateOffset(streakLastActivePht, 2);
+  return new Date(`${brokeDateStr}T00:00:00.000+08:00`);
 }
 
 /**
  * Computes the restore deadline for a lapsed streak.
  *
- * The streak broke at midnight PHT the day after the last active day.
- * Users have 42 hours from that midnight to restore their streak.
+ * Example: last mutual day Mon → Tue is the at-risk day → the streak breaks
+ * Wed 00:00 PHT → restorable until Thu 18:00 PHT (42h).
  *
- * deadline = midnight PHT of (streakLastActivePht + 1 day) + 42 hours
+ * Must stay in sync with SQL streak_restore_deadline() in migration 023.
  */
 export function computeRestoreDeadline(streakLastActivePht: string): Date {
-  const brokeDateStr = getCalendarDateOffset(streakLastActivePht, 1);
-  const brokeAtPht = new Date(`${brokeDateStr}T00:00:00.000+08:00`);
-  return new Date(brokeAtPht.getTime() + 42 * 60 * 60 * 1000);
+  const brokeAt = computeStreakBrokeAt(streakLastActivePht);
+  return new Date(brokeAt.getTime() + RESTORE_WINDOW_HOURS * 60 * 60 * 1000);
 }
 
 /**
  * Computes the authoritative effective day streak and status.
  *
- * - If last active today: streak is storedStreak, active today, safe until end of tomorrow ✅
- * - If last active yesterday: streak is storedStreak, NOT yet activated today (at_risk until midnight tonight) 🟡
- * - If last active before yesterday (or none): streak has lapsed/expired → 0 ❌
- *   In the lapsed case within 42h, streakStatus is 'lapsed' with streakRestoreDeadline.
+ * - Last active today → active, safe until end of tomorrow.
+ * - Last active yesterday → at_risk until midnight tonight.
+ * - Otherwise → broken. 'lapsed' while the 42h window is open, then 'expired'.
+ *
+ * `lapsed` carries the remembered broken-streak count once the midnight job
+ * (or the lazy path) has recorded it; before that, the stored count is used.
  */
 export function computeEffectiveStreak(
   storedStreak: number,
   streakLastActivePht: string | null,
+  lapsed?: { lapsedStreak?: number | null; lapsedLastActivePht?: string | null },
 ): ConversationStreakResult {
-  if (!streakLastActivePht || storedStreak <= 0) {
-    return {
-      dayStreak: 0,
-      streakActiveToday: false,
-      streakStatus: 'inactive',
-      lastQualifyingDate: streakLastActivePht,
-      expiresAt: null,
-      streakRestoreDeadline: streakLastActivePht ? computeRestoreDeadline(streakLastActivePht).toISOString() : null,
-    };
-  }
-
   const today = phtDateStr();
   const yesterday = getCalendarDateOffset(today, -1);
 
-  if (streakLastActivePht === today) {
-    // Both participants chatted today — streak is live and safe until end of tomorrow PHT.
+  if (storedStreak > 0 && streakLastActivePht === today) {
     return {
       dayStreak: storedStreak,
       streakActiveToday: true,
@@ -169,10 +185,11 @@ export function computeEffectiveStreak(
       lastQualifyingDate: today,
       expiresAt: phtEndOfDayUtc(getCalendarDateOffset(today, 1)),
       streakRestoreDeadline: null,
+      lapsedStreak: 0,
     };
-  } else if (streakLastActivePht === yesterday) {
-    // Yesterday was the last active day; today hasn't been completed yet.
-    // Streak is at risk until 11:59:59 PM PHT today.
+  }
+
+  if (storedStreak > 0 && streakLastActivePht === yesterday) {
     return {
       dayStreak: storedStreak,
       streakActiveToday: false,
@@ -180,20 +197,44 @@ export function computeEffectiveStreak(
       lastQualifyingDate: yesterday,
       expiresAt: phtEndOfDayUtc(today),
       streakRestoreDeadline: null,
+      lapsedStreak: 0,
     };
-  } else {
-    // Missed at least yesterday — streak has broken/expired.
-    const deadline = computeRestoreDeadline(streakLastActivePht);
-    const isRestorable = deadline.getTime() > Date.now();
+  }
+
+  // Broken (or never started). Prefer the remembered lapsed streak; fall back
+  // to a stored streak that the midnight job has not processed yet.
+  const lapsedCount =
+    (lapsed?.lapsedStreak ?? 0) > 0 ? (lapsed!.lapsedStreak as number)
+    : storedStreak > 0 ? storedStreak
+    : 0;
+  const lapsedAnchor =
+    (lapsed?.lapsedStreak ?? 0) > 0 ? (lapsed?.lapsedLastActivePht ?? null)
+    : storedStreak > 0 ? streakLastActivePht
+    : null;
+
+  if (lapsedCount <= 0 || !lapsedAnchor) {
     return {
       dayStreak: 0,
       streakActiveToday: false,
-      streakStatus: isRestorable ? 'lapsed' : 'expired',
+      streakStatus: 'inactive',
       lastQualifyingDate: streakLastActivePht,
-      expiresAt: isRestorable ? deadline.toISOString() : null,
-      streakRestoreDeadline: deadline.toISOString(),
+      expiresAt: null,
+      streakRestoreDeadline: null,
+      lapsedStreak: 0,
     };
   }
+
+  const deadline = computeRestoreDeadline(lapsedAnchor);
+  const isRestorable = deadline.getTime() > Date.now();
+  return {
+    dayStreak: 0,
+    streakActiveToday: false,
+    streakStatus: isRestorable ? 'lapsed' : 'expired',
+    lastQualifyingDate: lapsedAnchor,
+    expiresAt: isRestorable ? deadline.toISOString() : null,
+    streakRestoreDeadline: isRestorable ? deadline.toISOString() : null,
+    lapsedStreak: isRestorable ? lapsedCount : 0,
+  };
 }
 
 /**
@@ -207,7 +248,7 @@ export async function getStreaksForConversations(
 
   const { data, error } = await supabaseAdmin
     .from('conversation_streaks')
-    .select('conversation_id, day_streak, streak_last_active_pht')
+    .select('conversation_id, day_streak, streak_last_active_pht, lapsed_streak, lapsed_last_active_pht')
     .in('conversation_id', conversationIds);
   if (error) throw error;
 
@@ -218,87 +259,126 @@ export async function getStreaksForConversations(
       computeEffectiveStreak(
         (row.day_streak as number) ?? 0,
         row.streak_last_active_pht as string | null,
+        {
+          lapsedStreak: row.lapsed_streak as number | null,
+          lapsedLastActivePht: row.lapsed_last_active_pht as string | null,
+        },
       ),
     );
   }
   return map;
 }
 
-// ─── Restore ─────────────────────────────────────────────────────────────────
+// ─── Restore ─────────────────────────────────────────────────────────────────────────
 
-/**
- * Returns the number of remaining streak restore tokens for a user.
- */
-export async function getUserRestoreTokens(userId: string): Promise<number> {
-  const { data, error } = await supabaseAdmin
-    .from('profiles')
-    .select('streak_restores')
-    .eq('id', userId)
-    .single();
-  if (error) throw error;
-  return (data?.streak_restores as number) ?? 0;
+/** Current PHT month key ('YYYY-MM') the restore allowance belongs to. */
+export function phtMonthKey(now: Date = new Date()): string {
+  return phtDateStr(now).slice(0, 7);
 }
 
 /**
- * Restores a lapsed streak for a conversation.
- * - Validates the user has at least 1 restore token.
- * - Decrements `profiles.streak_restores` by 1.
- * - Sets `conversation_streaks.streak_last_active_pht` to today PHT
- *   so the streak is immediately considered active today.
- * - Logs the restore to `conversation_streak_restores`.
- *
- * Returns the remaining token count after the operation.
- * Throws if the user has no tokens remaining.
+ * Returns the user's remaining restores for the current PHT month.
+ * Refills to 5 automatically when a new month has started.
+ */
+export async function getUserRestoreTokens(userId: string): Promise<number> {
+  const { data, error } = await supabaseAdmin.rpc('get_streak_restores', {
+    p_user_id: userId,
+    p_month: phtMonthKey(),
+  });
+  if (error) throw error;
+  return (data as number) ?? 0;
+}
+
+export type RestoreFailure = 'nothing_to_restore' | 'window_expired' | 'no_restores_left';
+
+/**
+ * Atomically restores the conversation's lapsed streak to its exact previous
+ * count, spending one of the caller's monthly restores and writing a
+ * 'restored' timeline event. See restore_conversation_streak() in migration 023.
  */
 export async function restoreStreak(
   conversationId: string,
   userId: string,
-  previousStreak: number,
-): Promise<{ restoresRemaining: number; newStreak: number }> {
-  // 1. Check token balance
-  const remaining = await getUserRestoreTokens(userId);
-  if (remaining <= 0) {
-    throw new Error('No streak restore tokens remaining');
+): Promise<{ restoresRemaining: number; newStreak: number; event: StreakEventRow }> {
+  const { data, error } = await supabaseAdmin.rpc('restore_conversation_streak', {
+    p_conversation_id: conversationId,
+    p_user_id: userId,
+    p_month: phtMonthKey(),
+    p_today: phtDateStr(),
+  });
+  if (error) {
+    const failure = (['nothing_to_restore', 'window_expired', 'no_restores_left'] as RestoreFailure[])
+      .find((code) => error.message?.includes(code));
+    if (failure) {
+      const err = new Error(failure) as Error & { code: RestoreFailure };
+      err.code = failure;
+      throw err;
+    }
+    throw error;
   }
+  const result = data as { new_streak: number; restores_remaining: number; event: StreakEventRow };
+  return {
+    restoresRemaining: result.restores_remaining,
+    newStreak: result.new_streak,
+    event: result.event,
+  };
+}
 
-  // 2. Determine the restored streak value:
-  //    If previousStreak > 0, keep it. If 0, restore to 1 (day 1 restart).
-  const newStreak = previousStreak > 0 ? previousStreak : 1;
-  const today = phtDateStr();
+// ─── Lapse bookkeeping + timeline events ───────────────────────────────────────────────
 
-  // 3. Decrement token (atomic update with check)
-  const { error: tokenErr } = await supabaseAdmin
-    .from('profiles')
-    .update({ streak_restores: remaining - 1 })
-    .eq('id', userId)
-    .eq('streak_restores', remaining); // optimistic lock
-  if (tokenErr) throw tokenErr;
+/**
+ * Records that a streak broke: remembers its count for a possible restore,
+ * zeroes the live count, and inserts the 'ended' timeline event dated to the
+ * moment the streak actually broke. Idempotent — returns null if this broken
+ * streak was already recorded.
+ */
+export async function markStreakLapsed(
+  conversationId: string,
+  brokenStreak: number,
+  lastActivePht: string,
+): Promise<StreakEventRow | null> {
+  const deadline = computeRestoreDeadline(lastActivePht);
 
-  // 4. Write the restored streak as active today
-  const { error: streakErr } = await supabaseAdmin
-    .from('conversation_streaks')
-    .upsert(
-      {
-        conversation_id: conversationId,
-        day_streak: newStreak,
-        streak_last_active_pht: today,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: 'conversation_id' },
-    );
-  if (streakErr) throw streakErr;
-
-  // 5. Audit log
-  await supabaseAdmin
-    .from('conversation_streak_restores')
+  const { data: event, error: evErr } = await supabaseAdmin
+    .from('conversation_streak_events')
     .insert({
       conversation_id: conversationId,
-      restored_by: userId,
-      previous_streak: previousStreak,
+      event_type: 'ended',
+      streak_count: brokenStreak,
+      last_active_pht: lastActivePht,
+      restore_deadline: deadline.toISOString(),
+      created_at: computeStreakBrokeAt(lastActivePht).toISOString(),
     })
-    .then(({ error }) => {
-      if (error) console.warn('[StreakRestore] Failed to insert audit row:', error);
-    });
+    .select('*')
+    .single();
 
-  return { restoresRemaining: remaining - 1, newStreak };
+  // 23505 = unique violation → already recorded by the cron or a concurrent request.
+  if (evErr && (evErr as { code?: string }).code === '23505') return null;
+  if (evErr) throw evErr;
+
+  const { error: upErr } = await supabaseAdmin
+    .from('conversation_streaks')
+    .update({
+      day_streak: 0,
+      lapsed_streak: brokenStreak,
+      lapsed_last_active_pht: lastActivePht,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('conversation_id', conversationId)
+    .eq('streak_last_active_pht', lastActivePht); // don't clobber a newer streak
+  if (upErr) throw upErr;
+
+  return event as StreakEventRow;
+}
+
+/** Most recent streak events for a conversation (oldest first). */
+export async function getStreakEvents(conversationId: string, limit = 50): Promise<StreakEventRow[]> {
+  const { data, error } = await supabaseAdmin
+    .from('conversation_streak_events')
+    .select('*')
+    .eq('conversation_id', conversationId)
+    .order('created_at', { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  return ((data ?? []) as StreakEventRow[]).reverse();
 }

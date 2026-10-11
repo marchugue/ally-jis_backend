@@ -46,9 +46,11 @@ async function runTests() {
   assert.strictEqual(atRiskRes.streakStatus, 'at_risk');
   assert.strictEqual(atRiskRes.lastQualifyingDate, yesterday);
 
-  // Active two days ago: verify deadline is exactly (streakLastActivePht + 1 day at midnight PHT + 42h)
+  // Active two days ago: streak broke today at 00:00 PHT (last active + 2 days).
+  // Verify deadline is exactly (brokeDate midnight PHT + 42h)
   const deadline = computeRestoreDeadline(twoDaysAgo);
-  const expectedDeadline = new Date(new Date(`${yesterday}T00:00:00.000+08:00`).getTime() + 42 * 3600_000);
+  const brokeDate = getCalendarDateOffset(twoDaysAgo, 2);
+  const expectedDeadline = new Date(new Date(`${brokeDate}T00:00:00.000+08:00`).getTime() + 42 * 3600_000);
   assert.strictEqual(deadline.getTime(), expectedDeadline.getTime(), 'Restore deadline must equal brokeDate midnight PHT + 42h');
 
   // Verify status reflects whether deadline has passed

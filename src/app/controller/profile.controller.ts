@@ -140,3 +140,17 @@ export const deleteMe = asyncHandler(async (req: Request, res: Response) => {
   await profileService.deleteProfile(req.userId as string);
   res.status(204).send();
 });
+
+// GET /profiles/me/preferences
+export const getPreferences = asyncHandler(async (req: Request, res: Response) => {
+  const { getPreferences: fetchPrefs } = await import('../services/userPreferences.service');
+  const prefs = await fetchPrefs(req.userId as string);
+  res.status(200).json(prefs);
+});
+
+// PATCH /profiles/me/preferences
+export const updatePreferences = asyncHandler(async (req: Request, res: Response) => {
+  const { updatePreferences: savePrefs } = await import('../services/userPreferences.service');
+  const prefs = await savePrefs(req.userId as string, req.body);
+  res.status(200).json(prefs);
+});
