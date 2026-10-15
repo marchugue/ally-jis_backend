@@ -226,13 +226,14 @@ export async function removeAlly(userId: string, targetUserId: string): Promise<
  * after one is explicitly allowed elsewhere (requestConnection's upsert).
  */
 export async function getRelationshipStatus(userId: string, targetUserId: string): Promise<RelationshipStatusResponse> {
-  const [mine, theirs] = await Promise.all([
+  const [mine, theirs, isAlly] = await Promise.all([
     interactionModel.findStatus(userId, targetUserId),
     interactionModel.findStatus(targetUserId, userId),
+    interactionModel.isAllies(userId, targetUserId),
   ]);
 
   let status: RelationshipStatus = 'none';
-  if (mine === 'accepted' && theirs === 'accepted') {
+  if (isAlly || (mine === 'accepted' && theirs === 'accepted')) {
     status = 'allies';
   } else if (mine === 'pending') {
     status = 'pending_outgoing';
@@ -242,8 +243,13 @@ export async function getRelationshipStatus(userId: string, targetUserId: string
     // Check active match from matchmaking
     const activeMatch = await matchModel.findActiveMatchBetweenUsers(userId, targetUserId).catch(() => null);
     if (activeMatch) {
-      if (activeMatch.revealed_at) {
+      if (
+        Boolean(activeMatch.revealed_at) ||
+        (activeMatch.current_stage && activeMatch.current_stage >= 4) ||
+        (activeMatch.match_points && activeMatch.match_points >= 250)
+      ) {
         status = 'allies';
+        interactionModel.createAllyRelationship(userId, targetUserId).catch(() => {});
       } else {
         const [targetHasReq, userHasReq] = await Promise.all([
           notificationModel.hasPendingFriendRequest(targetUserId, userId).catch(() => false),
@@ -255,8 +261,7 @@ export async function getRelationshipStatus(userId: string, targetUserId: string
         } else if (userHasReq) {
           status = 'pending_incoming';
         } else {
-          // Both sides accepted! Active match in progress
-          status = 'allies';
+          status = 'none';
         }
       }
     }

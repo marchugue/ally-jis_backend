@@ -166,33 +166,48 @@ export async function isAllies(userIdA: string, userIdB: string): Promise<boolea
       return true;
     }
 
-    // 2. Check active or revealed matches
+    // 2. Check ANY match between them that was revealed or reached stage 4 / 250 pts
     const { data: matchData, error: matchError } = await supabaseAdmin
       .from('matches')
-      .select('id, revealed_at, current_stage, status, user_a_id, user_b_id')
+      .select('id, revealed_at, current_stage, status, match_points, user_a_id, user_b_id')
       .or(
         `and(user_a_id.eq.${userIdA},user_b_id.eq.${userIdB}),and(user_a_id.eq.${userIdB},user_b_id.eq.${userIdA})`
       )
-      .in('status', ['chatting', 'confirmed'])
-      .limit(1);
+      .order('created_at', { ascending: false });
 
     if (!matchError && matchData && matchData.length > 0) {
-      const match = matchData[0];
-      if (match.revealed_at || (match.current_stage && match.current_stage >= 4)) {
+      const revealedMatch = matchData.find(
+        (m: any) =>
+          Boolean(m.revealed_at) ||
+          (m.current_stage && m.current_stage >= 4) ||
+          (m.match_points && m.match_points >= 250)
+      );
+
+      if (revealedMatch) {
+        // Backfill user_interactions so future queries find it immediately
+        createAllyRelationship(userIdA, userIdB).catch(() => {});
         return true;
       }
+    }
 
-      // Check if neither side has a pending friend_request notification
-      const { data: notifData } = await supabaseAdmin
-        .from('notifications')
-        .select('id')
-        .eq('type', 'friend_request')
-        .or(
-          `and(user_id.eq.${userIdA},from_user_id.eq.${userIdB}),and(user_id.eq.${userIdB},from_user_id.eq.${userIdA})`
-        )
+    // 3. Check if they share an allied conversation
+    const { data: convMembers, error: convError } = await supabaseAdmin
+      .from('conversation_members')
+      .select('conversation_id, conversations!inner(type)')
+      .eq('user_id', userIdA)
+      .eq('conversations.type', 'allied');
+
+    if (!convError && convMembers && convMembers.length > 0) {
+      const cids = convMembers.map((c: any) => c.conversation_id);
+      const { data: shared } = await supabaseAdmin
+        .from('conversation_members')
+        .select('conversation_id')
+        .eq('user_id', userIdB)
+        .in('conversation_id', cids)
         .limit(1);
 
-      if (!notifData || notifData.length === 0) {
+      if (shared && shared.length > 0) {
+        createAllyRelationship(userIdA, userIdB).catch(() => {});
         return true;
       }
     }
@@ -263,18 +278,62 @@ export async function listAllies(
   return items.slice(offset, offset + limit);
 }
 
-/** Raw id set of accepted allies — used for mutual-allies computation. */
+/** Raw id set of accepted allies — used for mutual-allies computation and relationship counts. */
 export async function getAllyIds(userId: string): Promise<Set<string>> {
-  const { data, error } = await supabaseAdmin
-    .from('user_interactions')
-    .select('user_id, target_user_id')
-    .eq('status', 'accepted')
-    .or(`user_id.eq.${userId},target_user_id.eq.${userId}`);
-  if (error) throw error;
   const ids = new Set<string>();
-  for (const row of (data as { user_id: string; target_user_id: string }[]) ?? []) {
-    ids.add(row.user_id === userId ? row.target_user_id : row.user_id);
+
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('user_interactions')
+      .select('user_id, target_user_id')
+      .eq('status', 'accepted')
+      .or(`user_id.eq.${userId},target_user_id.eq.${userId}`);
+    if (!error && data) {
+      for (const row of (data as { user_id: string; target_user_id: string }[]) ?? []) {
+        ids.add(row.user_id === userId ? row.target_user_id : row.user_id);
+      }
+    }
+
+    // Also include revealed or stage >= 4 or match_points >= 250 matches
+    const { data: matches } = await supabaseAdmin
+      .from('matches')
+      .select('user_a_id, user_b_id, revealed_at, current_stage, match_points')
+      .or(`user_a_id.eq.${userId},user_b_id.eq.${userId}`);
+
+    for (const m of (matches as any[]) ?? []) {
+      if (
+        Boolean(m.revealed_at) ||
+        (m.current_stage && m.current_stage >= 4) ||
+        (m.match_points && m.match_points >= 250)
+      ) {
+        const partnerId = m.user_a_id === userId ? m.user_b_id : m.user_a_id;
+        ids.add(partnerId);
+      }
+    }
+
+    // Also include allied conversations
+    const { data: convMembers } = await supabaseAdmin
+      .from('conversation_members')
+      .select('conversation_id, conversations!inner(type)')
+      .eq('user_id', userId)
+      .eq('conversations.type', 'allied');
+
+    if (convMembers && convMembers.length > 0) {
+      const cids = convMembers.map((c: any) => c.conversation_id);
+      const { data: otherMembers } = await supabaseAdmin
+        .from('conversation_members')
+        .select('user_id')
+        .neq('user_id', userId)
+        .in('conversation_id', cids);
+
+      for (const om of (otherMembers as any[]) ?? []) {
+        if (om.user_id) ids.add(om.user_id);
+      }
+    }
+  } catch (err) {
+    console.warn('[getAllyIds] Error fetching ally IDs:', err);
   }
+
   return ids;
 }
 

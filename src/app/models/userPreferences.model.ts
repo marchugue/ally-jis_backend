@@ -11,6 +11,7 @@ export interface UserPreferences {
   show_online_status: boolean;
   show_last_active: boolean;
   read_receipts_enabled: boolean;
+  account_privacy?: 'public' | 'private';
   profile_visibility?: 'campus' | 'matches_only' | 'hidden';
   feed_post_audience?: 'campus' | 'matches_only' | 'anonymous_only';
   default_post_audience: 'campus' | 'department' | 'allies';
@@ -40,6 +41,7 @@ export const DEFAULT_USER_PREFERENCES: Omit<UserPreferences, 'user_id' | 'create
   show_online_status: true,
   show_last_active: true,
   read_receipts_enabled: true,
+  account_privacy: 'public',
   profile_visibility: 'campus',
   feed_post_audience: 'campus',
   default_post_audience: 'campus',
@@ -54,6 +56,20 @@ export const DEFAULT_USER_PREFERENCES: Omit<UserPreferences, 'user_id' | 'create
   quiet_hours_start: '22:00',
   quiet_hours_end: '07:00',
 };
+
+/**
+ * True when the user's account is set to private. Read-only and never
+ * creates a row; a missing row or any error means "public".
+ */
+export async function isAccountPrivate(userId: string): Promise<boolean> {
+  const { data, error } = await supabaseAdmin
+    .from('user_preferences')
+    .select('account_privacy')
+    .eq('user_id', userId)
+    .maybeSingle();
+  if (error || !data) return false;
+  return (data as { account_privacy?: string }).account_privacy === 'private';
+}
 
 /**
  * Returns user preferences, automatically creating a default record if one does not exist yet.

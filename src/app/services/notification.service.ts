@@ -403,7 +403,50 @@ export async function listNotifications(
 ): Promise<NotificationRow[]> {
   const rows = await notificationModel.findByUser(userId, limit ?? DEFAULT_LIMIT, category);
   const transformed = rows.map(transformNotificationRow);
-  const consolidated = consolidateNotifications(transformed);
+  let consolidated = consolidateNotifications(transformed);
+
+  // If user is already following back the sender of any new_follower notification,
+  // remove it from the database and exclude it from the returned notifications.
+  const followerNotifs = consolidated.filter((n) => n.type === 'new_follower');
+  if (followerNotifs.length > 0) {
+    const targetUserIds = Array.from(
+      new Set(followerNotifs.map((n) => n.from_user_id || n.target_id).filter(Boolean) as string[])
+    );
+    if (targetUserIds.length > 0) {
+      try {
+        const { data: followRows } = await supabaseAdmin
+          .from('follows')
+          .select('followed_id')
+          .eq('follower_id', userId)
+          .in('followed_id', targetUserIds);
+
+        const followedBackIds = new Set((followRows || []).map((r: any) => r.followed_id));
+
+        if (followedBackIds.size > 0) {
+          // Clean up followed-back notifications from database
+          const idsToDelete = followerNotifs
+            .filter((n) => {
+              const tid = n.from_user_id || n.target_id;
+              return tid && followedBackIds.has(tid);
+            })
+            .map((n) => n.id);
+
+          if (idsToDelete.length > 0) {
+            void supabaseAdmin.from('notifications').delete().in('id', idsToDelete);
+          }
+
+          // Exclude followed-back notifications from returned list
+          consolidated = consolidated.filter((n) => {
+            if (n.type !== 'new_follower') return true;
+            const tid = n.from_user_id || n.target_id;
+            return !tid || !followedBackIds.has(tid);
+          });
+        }
+      } catch (err) {
+        console.warn('[listNotifications] Error checking follow back status:', err);
+      }
+    }
+  }
 
   if (category && category !== 'all') {
     if (category === 'unread') {
@@ -610,5 +653,16 @@ export async function markAllRead(userId: string): Promise<void> {
 export async function clearAllNotifications(userId: string): Promise<void> {
   const { clearAllNotifications: engineClearAll } = await import('./notificationEngine.service');
   await engineClearAll(userId);
+}
+
+/**
+ * DELETE /notifications/:id
+ */
+export async function deleteNotification(id: string, userId: string): Promise<void> {
+  await notificationModel.deleteById(id, userId);
+  try {
+    const { emitToUser } = await import('./realtime.service');
+    emitToUser(userId, 'notification:removed', { id, notificationId: id });
+  } catch {}
 }
 

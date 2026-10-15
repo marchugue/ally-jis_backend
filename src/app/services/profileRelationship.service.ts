@@ -11,6 +11,7 @@ import * as followModel from '../models/follow.model';
 import * as interactionModel from '../models/interaction.model';
 import * as matchModel from '../models/matchmaking.model';
 import * as notificationModel from '../models/notification.model';
+import { isAccountPrivate } from '../models/userPreferences.model';
 import type { RelationshipStatus } from '../types/interaction.types';
 
 export interface ProfileRelationshipSummary {
@@ -23,6 +24,8 @@ export interface ProfileRelationshipSummary {
   mutualAlliesCount: number;
   mutualFollowersCount: number;
   mutualFollowingCount: number;
+  /** The viewed account is private — only allies may see its posts. */
+  isPrivate: boolean;
 }
 
 function intersectionSize(a: Set<string>, b: Set<string>): number {
@@ -48,6 +51,7 @@ export async function getRelationshipSummary(viewerId: string, targetId: string)
       mutualAlliesCount: 0,
       mutualFollowersCount: 0,
       mutualFollowingCount: 0,
+      isPrivate: await isAccountPrivate(viewerId),
     };
   }
 
@@ -63,6 +67,7 @@ export async function getRelationshipSummary(viewerId: string, targetId: string)
     theirFollowingIds,
     myStatus,
     theirStatus,
+    isConfirmedAllies,
   ] = await Promise.all([
     followModel.getStatus(viewerId, targetId),
     followModel.getCounts(targetId),
@@ -75,10 +80,11 @@ export async function getRelationshipSummary(viewerId: string, targetId: string)
     followModel.getFollowingIds(targetId),
     interactionModel.findStatus(viewerId, targetId),
     interactionModel.findStatus(targetId, viewerId),
+    interactionModel.isAllies(viewerId, targetId),
   ]);
 
   let allyStatus: RelationshipStatus = 'none';
-  if (myStatus === 'accepted' && theirStatus === 'accepted') {
+  if (isConfirmedAllies || (myStatus === 'accepted' && theirStatus === 'accepted')) {
     allyStatus = 'allies';
   } else if (myStatus === 'pending') {
     allyStatus = 'pending_outgoing';
@@ -87,8 +93,13 @@ export async function getRelationshipSummary(viewerId: string, targetId: string)
   } else {
     const activeMatch = await matchModel.findActiveMatchBetweenUsers(viewerId, targetId).catch(() => null);
     if (activeMatch) {
-      if (activeMatch.revealed_at) {
+      if (
+        Boolean(activeMatch.revealed_at) ||
+        (activeMatch.current_stage && activeMatch.current_stage >= 4) ||
+        (activeMatch.match_points && activeMatch.match_points >= 250)
+      ) {
         allyStatus = 'allies';
+        interactionModel.createAllyRelationship(viewerId, targetId).catch(() => {});
       } else {
         const [targetHasReq, userHasReq] = await Promise.all([
           notificationModel.hasPendingFriendRequest(targetId, viewerId).catch(() => false),
@@ -100,7 +111,7 @@ export async function getRelationshipSummary(viewerId: string, targetId: string)
         } else if (userHasReq) {
           allyStatus = 'pending_incoming';
         } else {
-          allyStatus = 'allies';
+          allyStatus = 'none';
         }
       }
     }
@@ -116,5 +127,6 @@ export async function getRelationshipSummary(viewerId: string, targetId: string)
     mutualAlliesCount: intersectionSize(myAllyIds, theirAllyIds),
     mutualFollowersCount: intersectionSize(myFollowerIds, theirFollowerIds),
     mutualFollowingCount: intersectionSize(myFollowingIds, theirFollowingIds),
+    isPrivate: await isAccountPrivate(targetId),
   };
 }

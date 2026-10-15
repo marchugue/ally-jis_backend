@@ -80,7 +80,10 @@ router.get('/:id/redirection', notificationController.getRedirection);
 // PATCH /api/notifications/:id/read
 router.patch('/:id/read', notificationController.markRead);
 
-// DELETE /api/notification/
+// DELETE /api/notifications
 router.delete('/', notificationController.clearAll);
+
+// DELETE /api/notifications/:id
+router.delete('/:id', notificationController.deleteOne);
 
 export default router;

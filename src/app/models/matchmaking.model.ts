@@ -12,6 +12,8 @@
 import { supabaseAdmin } from '../../config/supabase';
 import { HttpError } from '../types/auth.types';
 import type { CandidateResult, MatchIdentityView, MatchRow, MatchStatus, QueueRow } from '../types/matchmaking.types';
+import * as profileModel from './profile.model';
+import * as interactionModel from './interaction.model';
 
 function mapMatchRpcError(error: { message?: string }): never {
   const msg = error.message || '';
@@ -131,9 +133,135 @@ export async function getMatchById(matchId: string): Promise<MatchRow | null> {
 }
 
 export async function findAndReserveMatch(requesterId: string): Promise<CandidateResult | null> {
-  const { data, error } = await supabaseAdmin.rpc('find_and_reserve_match', { requester_id: requesterId });
-  if (error) throw error;
-  return (data?.[0] ?? null) as CandidateResult | null;
+  // 1. Fetch all previous matches for requesterId to ensure never matching the same person again
+  const { data: pastMatches, error: matchError } = await supabaseAdmin
+    .from('matches')
+    .select('user_a_id, user_b_id')
+    .or(`user_a_id.eq.${requesterId},user_b_id.eq.${requesterId}`);
+  if (matchError) throw matchError;
+
+  const excludedUserIds = new Set<string>([requesterId]);
+  for (const m of pastMatches ?? []) {
+    const partnerId = m.user_a_id === requesterId ? m.user_b_id : m.user_a_id;
+    if (partnerId) excludedUserIds.add(partnerId);
+  }
+
+  // 2. Fetch all allies of requesterId (never match with existing allies)
+  try {
+    const allyIds = await interactionModel.getAllyIds(requesterId);
+    for (const aId of allyIds) {
+      excludedUserIds.add(aId);
+    }
+  } catch (err) {
+    console.warn('[findAndReserveMatch] getAllyIds warning:', err);
+  }
+
+  // 3. Find candidates in matchmaking_queue who are searching
+  const { data: queueRows, error: queueErr } = await supabaseAdmin
+    .from('matchmaking_queue')
+    .select('*')
+    .eq('status', 'searching')
+    .neq('user_id', requesterId)
+    .order('joined_at', { ascending: true });
+  if (queueErr) throw queueErr;
+
+  // Filter out any candidates already matched with or allied with requesterId
+  const eligibleCandidates = (queueRows ?? []).filter((q: any) => !excludedUserIds.has(q.user_id));
+  if (eligibleCandidates.length === 0) {
+    return null; // No new candidate available right now
+  }
+
+  // 4. Fetch profiles to calculate compatibility score
+  const candidateIds = eligibleCandidates.map((c: any) => c.user_id);
+  const [requesterProfile, candidateProfiles] = await Promise.all([
+    profileModel.findById(requesterId).catch(() => null),
+    profileModel.findByIds(candidateIds).catch(() => []),
+  ]);
+
+  const candidateProfileMap = new Map((candidateProfiles ?? []).map((p: any) => [p.id, p]));
+  const reqInterests = new Set((requesterProfile?.interests ?? []).map((i: string) => i.toLowerCase().trim()));
+  const reqOrgs = new Set((requesterProfile?.organizations ?? []).map((o: string) => o.toLowerCase().trim()));
+
+  let bestCandidateId = eligibleCandidates[0].user_id;
+  let bestScore = 30;
+
+  for (const candidate of eligibleCandidates) {
+    const cp = candidateProfileMap.get(candidate.user_id);
+    let score = 20; // baseline peer points
+    if (cp) {
+      if (
+        requesterProfile?.department &&
+        cp.department &&
+        requesterProfile.department.toLowerCase() === cp.department.toLowerCase()
+      ) {
+        score += 15;
+      }
+      if (
+        requesterProfile?.course &&
+        cp.course &&
+        requesterProfile.course.toLowerCase() === cp.course.toLowerCase()
+      ) {
+        score += 10;
+      }
+      if (Array.isArray(cp.interests)) {
+        for (const ci of cp.interests) {
+          if (reqInterests.has(ci.toLowerCase().trim())) score += 10;
+        }
+      }
+      if (Array.isArray(cp.organizations)) {
+        for (const co of cp.organizations) {
+          if (reqOrgs.has(co.toLowerCase().trim())) score += 5;
+        }
+      }
+    }
+    score = Math.min(Math.max(score, 15), 99);
+    if (score > bestScore) {
+      bestScore = score;
+      bestCandidateId = candidate.user_id;
+    }
+  }
+
+  // 5. Atomically reserve chosen candidate in queue
+  const { data: reservedQueue, error: reserveErr } = await supabaseAdmin
+    .from('matchmaking_queue')
+    .update({ status: 'reserved' })
+    .eq('user_id', bestCandidateId)
+    .eq('status', 'searching')
+    .select();
+
+  if (reserveErr || !reservedQueue || reservedQueue.length === 0) {
+    return null;
+  }
+
+  // 6. Create the match record in matches table
+  const acceptExpiresAt = new Date(Date.now() + 30000).toISOString();
+  const { data: newMatch, error: insertError } = await supabaseAdmin
+    .from('matches')
+    .insert({
+      user_a_id: requesterId,
+      user_b_id: bestCandidateId,
+      status: 'pending',
+      compatibility_score: bestScore,
+      accept_expires_at: acceptExpiresAt,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .select()
+    .single();
+
+  if (insertError) {
+    await supabaseAdmin
+      .from('matchmaking_queue')
+      .update({ status: 'searching' })
+      .eq('user_id', bestCandidateId);
+    throw insertError;
+  }
+
+  return {
+    match_id: newMatch.id,
+    candidate_id: bestCandidateId,
+    compatibility_score: bestScore,
+  };
 }
 
 export async function acceptMatch(matchId: string, userId: string): Promise<MatchRow> {
@@ -212,7 +340,7 @@ export async function assignIdentities(
 }
 
 /**
- * Finds an unrevealed active match between two users if one exists.
+ * Finds the latest active match between two users if one exists.
  */
 export async function findActiveMatchBetweenUsers(userIdA: string, userIdB: string): Promise<MatchRow | null> {
   const { data, error } = await supabaseAdmin
@@ -222,7 +350,8 @@ export async function findActiveMatchBetweenUsers(userIdA: string, userIdB: stri
       `and(user_a_id.eq.${userIdA},user_b_id.eq.${userIdB}),and(user_a_id.eq.${userIdB},user_b_id.eq.${userIdA})`,
     )
     .in('status', ['pending', 'chatting', 'confirmed'])
-    .is('revealed_at', null)
+    .order('created_at', { ascending: false })
+    .limit(1)
     .maybeSingle();
   if (error) throw error;
   return data as MatchRow | null;
@@ -436,13 +565,14 @@ export async function markRevealedIfMatched(userIdA: string, userIdB: string): P
   if (updateError) throw updateError;
 }
 
-/**
- * Marks a specific match as revealed (profile unlocked at 250 points).
- */
 export async function revealMatch(matchId: string): Promise<void> {
   const { error } = await supabaseAdmin
     .from('matches')
-    .update({ revealed_at: new Date().toISOString() })
+    .update({
+      revealed_at: new Date().toISOString(),
+      current_stage: 4,
+      updated_at: new Date().toISOString(),
+    })
     .eq('id', matchId);
   if (error) throw error;
 }
@@ -634,11 +764,14 @@ export async function getUnrevealedMatchBetween(
     .from('matches')
     .select('*')
     .or(
-      `and(user_a_id.eq.${userIdA},target_user_id.eq.${userIdB}),and(user_a_id.eq.${userIdB},target_user_id.eq.${userIdA})`,
+      `and(user_a_id.eq.${userIdA},user_b_id.eq.${userIdB}),and(user_a_id.eq.${userIdB},user_b_id.eq.${userIdA})`,
     )
     .in('status', ['chatting', 'confirmed'])
     .is('revealed_at', null)
     .lt('match_points', 250)
+    .lt('current_stage', 4)
+    .order('created_at', { ascending: false })
+    .limit(1)
     .maybeSingle();
 
   if (error || !data) {
@@ -648,14 +781,16 @@ export async function getUnrevealedMatchBetween(
       .select('*')
       .or(`user_a_id.eq.${userIdA},user_b_id.eq.${userIdA}`)
       .in('status', ['chatting', 'confirmed'])
-      .is('revealed_at', null);
+      .is('revealed_at', null)
+      .order('created_at', { ascending: false });
 
     const match = (fallbackData ?? []).find(
       (m: any) =>
         ((m.user_a_id === userIdA && m.user_b_id === userIdB) ||
           (m.user_a_id === userIdB && m.user_b_id === userIdA)) &&
         !m.revealed_at &&
-        (m.match_points ?? 0) < 250,
+        (m.match_points ?? 0) < 250 &&
+        (!m.current_stage || m.current_stage < 4),
     );
     return (match as MatchRow) ?? null;
   }

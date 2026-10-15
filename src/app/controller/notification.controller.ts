@@ -57,3 +57,10 @@ export const clearAll = asyncHandler(async (req: Request, res: Response) => {
   await notificationService.clearAllNotifications(req.userId as string);
   res.status(204).send();
 });
+
+// DELETE /notifications/:id
+export const deleteOne = asyncHandler(async (req: Request, res: Response) => {
+  const id = String(req.params.id);
+  await notificationService.deleteNotification(id, req.userId as string);
+  res.status(204).send();
+});

@@ -14,6 +14,21 @@ export async function followUser(userId: string, targetUserId: string): Promise<
 
   await followModel.follow(userId, targetUserId);
 
+  // If targetUserId had previously followed userId, userId has now followed them back.
+  // Remove the new_follower notification for userId since they are now following them back.
+  try {
+    const notificationModel = await import('../models/notification.model');
+    await notificationModel.deleteFollowerNotification(userId, targetUserId);
+    const { emitToUser } = await import('./realtime.service');
+    emitToUser(userId, 'notification:removed', {
+      type: 'new_follower',
+      fromUserId: targetUserId,
+      targetId: targetUserId,
+    });
+  } catch (err) {
+    console.warn('[followService] Could not clean up follower notification for follow-back:', err);
+  }
+
   await createNotification({
     userId: targetUserId,
     type: 'new_follower',
@@ -34,6 +49,22 @@ export async function followUser(userId: string, targetUserId: string): Promise<
       targetId: targetUserId,
     });
   } catch {}
+
+  try {
+    const { emitToUser } = await import('./realtime.service');
+    emitToUser(targetUserId, 'follow:updated', {
+      followerId: userId,
+      targetUserId,
+      isFollowing: true,
+      action: 'follow',
+    });
+    emitToUser(userId, 'follow:updated', {
+      followerId: userId,
+      targetUserId,
+      isFollowing: true,
+      action: 'follow',
+    });
+  } catch {}
 }
 
 export async function unfollowUser(userId: string, targetUserId: string): Promise<void> {
@@ -48,6 +79,22 @@ export async function unfollowUser(userId: string, targetUserId: string): Promis
       title: 'Unfollowed a student',
       targetType: 'profile',
       targetId: targetUserId,
+    });
+  } catch {}
+
+  try {
+    const { emitToUser } = await import('./realtime.service');
+    emitToUser(targetUserId, 'follow:updated', {
+      followerId: userId,
+      targetUserId,
+      isFollowing: false,
+      action: 'unfollow',
+    });
+    emitToUser(userId, 'follow:updated', {
+      followerId: userId,
+      targetUserId,
+      isFollowing: false,
+      action: 'unfollow',
     });
   } catch {}
 }

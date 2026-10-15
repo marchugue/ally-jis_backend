@@ -2,6 +2,7 @@ import * as feedModel from '../models/feed.model';
 import * as profileModel from '../models/profile.model';
 import * as followModel from '../models/follow.model';
 import * as matchModel from '../models/matchmaking.model';
+import { isAccountPrivate } from '../models/userPreferences.model';
 import { HttpError } from '../types/auth.types';
 import { getDeterministicAnonymousAvatar } from '../constants/anonymousIdentity';
 import type {
@@ -74,7 +75,7 @@ async function hydratePosts(viewerId: string, posts: PostRow[]): Promise<PostWit
           ...rawAuthor,
           is_following: isOwn ? false : followingIds.has(post.author_id),
           is_ally: true,
-          avatarKey: null,
+          avatarKey: (rawAuthor as any).avatar_preset_id || getDeterministicAnonymousAvatar(rawAuthor.id),
         };
       } else {
         author = {
@@ -133,7 +134,7 @@ async function hydrateComments(viewerId: string, comments: CommentRow[]): Promis
         author = {
           ...rawAuthor,
           is_ally: true,
-          avatarKey: null,
+          avatarKey: (rawAuthor as any).avatar_preset_id || getDeterministicAnonymousAvatar(rawAuthor.id),
         };
       } else {
         author = {
@@ -324,12 +325,17 @@ export async function listPostsByAuthor(
   options: { limit?: number; before?: string }
 ): Promise<PostWithAuthor[]> {
   const limit = clampLimit(options.limit);
+
+  const isOwner = viewerId === authorId;
+  const isAlly = isOwner || (await feedModel.canViewPost(viewerId, authorId, 'connections'));
+
+  // Private account: the profile stays reachable, but only allies see posts.
+  if (!isAlly && (await isAccountPrivate(authorId))) {
+    return [];
+  }
+
   const candidates = await feedModel.findPostsByAuthor(authorId, limit, options.before);
-
-  const canSeeConnectionsPosts =
-    viewerId === authorId || (await feedModel.canViewPost(viewerId, authorId, 'connections'));
-
-  const visible = candidates.filter((post) => post.audience === 'public' || canSeeConnectionsPosts);
+  const visible = candidates.filter((post) => post.audience === 'public' || isAlly);
 
   return hydratePosts(viewerId, visible);
 }

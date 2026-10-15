@@ -71,33 +71,47 @@ export async function findAcceptedConnectionIds(userId: string): Promise<Set<str
   try {
     const { data: matches, error: matchError } = await supabaseAdmin
       .from('matches')
-      .select('user_a_id, user_b_id, revealed_at, current_stage, status')
-      .or(`user_a_id.eq.${userId},user_b_id.eq.${userId}`)
-      .in('status', ['chatting', 'confirmed']);
+      .select('user_a_id, user_b_id, revealed_at, current_stage, status, match_points')
+      .or(`user_a_id.eq.${userId},user_b_id.eq.${userId}`);
 
     if (!matchError && matches && matches.length > 0) {
-      // Exclude matches that still have an unaccepted pending friend_request notification
-      const { data: pendingNotifs } = await supabaseAdmin
-        .from('notifications')
-        .select('user_id, from_user_id')
-        .eq('type', 'friend_request')
-        .or(`user_id.eq.${userId},from_user_id.eq.${userId}`);
-
-      const pendingPairs = new Set<string>();
-      for (const notif of pendingNotifs ?? []) {
-        pendingPairs.add(`${notif.user_id}:${notif.from_user_id}`);
-        pendingPairs.add(`${notif.from_user_id}:${notif.user_id}`);
-      }
-
       for (const m of matches) {
         const partnerId = m.user_a_id === userId ? m.user_b_id : m.user_a_id;
-        if (m.revealed_at || (m.current_stage && m.current_stage >= 4)) {
+        if (
+          Boolean(m.revealed_at) ||
+          (m.current_stage && m.current_stage >= 4) ||
+          (m.match_points && m.match_points >= 250)
+        ) {
           ids.add(partnerId);
         }
       }
     }
   } catch (err) {
     console.warn('[findAcceptedConnectionIds] Error checking active matches:', err);
+  }
+
+  // 3. Allied conversations
+  try {
+    const { data: convMembers } = await supabaseAdmin
+      .from('conversation_members')
+      .select('conversation_id, conversations!inner(type)')
+      .eq('user_id', userId)
+      .eq('conversations.type', 'allied');
+
+    if (convMembers && convMembers.length > 0) {
+      const cids = convMembers.map((c: any) => c.conversation_id);
+      const { data: otherMembers } = await supabaseAdmin
+        .from('conversation_members')
+        .select('user_id')
+        .neq('user_id', userId)
+        .in('conversation_id', cids);
+
+      for (const om of otherMembers ?? []) {
+        if (om.user_id) ids.add(om.user_id);
+      }
+    }
+  } catch (err) {
+    console.warn('[findAcceptedConnectionIds] Error checking allied conversations:', err);
   }
 
   return ids;

@@ -3,6 +3,7 @@ import * as interactionModel from '../models/interaction.model';
 import * as matchModel from '../models/matchmaking.model';
 import { HttpError } from '../types/auth.types';
 import * as followModel from '../models/follow.model';
+import { getDeterministicAnonymousAvatar } from '../constants/anonymousIdentity';
 import type { DiscoverProfileItem, ProfileFilterOptions, ProfileRow, UpdateProfilePayload, UsernameAvailability } from '../types/profile.types';
 
 /**
@@ -21,29 +22,37 @@ export async function getProfile(id: string, viewerId?: string): Promise<Profile
       const isUserA = unrevealedMatch.user_a_id === viewerId;
       const partnerAlias = isUserA ? unrevealedMatch.user_b_alias : unrevealedMatch.user_a_alias;
       const partnerAvatar = isUserA ? unrevealedMatch.user_b_avatar : unrevealedMatch.user_a_avatar;
+      const avatarKey = partnerAvatar || 'fox';
       return {
         ...profile,
         full_name: partnerAlias || 'Anonymous Ally',
         username: 'anonymous',
         avatar_url: null,
-        avatar_preset_id: partnerAvatar || 'fox',
+        avatar_preset_id: avatarKey,
+        avatarKey,
         bio: null,
-      } as any;
+        is_ally: true,
+        is_unrevealed_match: true,
+      };
     }
 
     const isAlly = await interactionModel.isAllies(viewerId, id);
-    if (!isAlly) {
-      return {
-        ...profile,
-        full_name: 'Anonymous Peer',
-        username: 'anonymous',
-        avatar_url: null,
-        bio: null,
-      };
-    }
+    const fallbackKey = profile.avatar_preset_id || getDeterministicAnonymousAvatar(id);
+    return {
+      ...profile,
+      avatarKey: fallbackKey,
+      avatar_preset_id: profile.avatar_preset_id || fallbackKey,
+      is_ally: isAlly,
+      is_unrevealed_match: false,
+    };
   }
 
-  return profile;
+  return {
+    ...profile,
+    avatarKey: profile.avatar_preset_id || getDeterministicAnonymousAvatar(id),
+    is_ally: true,
+    is_unrevealed_match: false,
+  };
 }
 
 /**
@@ -79,7 +88,43 @@ export async function listProfiles(
     interest,
   });
 
-  // If viewerId is provided or match / popularity sorting requested, enrich profiles
+  // Collect allies and past matches to strictly show all non-ally and non-match students
+  let allyIds = new Set<string>();
+  let matchedUserIds = new Set<string>();
+
+  if (viewerId) {
+    try {
+      allyIds = await interactionModel.getAllyIds(viewerId);
+    } catch (err) {
+      console.warn('[listProfiles] getAllyIds error:', err);
+    }
+
+    try {
+      const { supabaseAdmin } = await import('../../config/supabase');
+      const { data: userMatches } = await supabaseAdmin
+        .from('matches')
+        .select('user_a_id, user_b_id')
+        .or(`user_a_id.eq.${viewerId},user_b_id.eq.${viewerId}`);
+
+      for (const m of (userMatches as any[]) ?? []) {
+        const partnerId = m.user_a_id === viewerId ? m.user_b_id : m.user_a_id;
+        if (partnerId) matchedUserIds.add(partnerId);
+      }
+    } catch (err) {
+      console.warn('[listProfiles] userMatches error:', err);
+    }
+  }
+
+  // Filter out self, allies, and anyone already matched
+  const candidates = rawProfiles.filter((p) => {
+    if (viewerId && p.id === viewerId) return false;
+    if (excludeId && p.id === excludeId) return false;
+    if (allyIds.has(p.id)) return false;
+    if (matchedUserIds.has(p.id)) return false;
+    return true;
+  });
+
+  // Enrich candidate profiles with real data and compatibility score
   let viewerProfile: ProfileRow | null = null;
   if (viewerId) {
     viewerProfile = await profileModel.findById(viewerId).catch(() => null);
@@ -90,7 +135,7 @@ export async function listProfiles(
   );
   const totalViewerInterests = Math.max(1, viewerInterests.size);
 
-  const enriched: DiscoverProfileItem[] = rawProfiles.map((p) => {
+  const enriched: DiscoverProfileItem[] = candidates.map((p) => {
     let sharedInterestsCount = 0;
     if (Array.isArray(p.interests)) {
       for (const userInt of p.interests) {
@@ -100,44 +145,47 @@ export async function listProfiles(
       }
     }
 
-    const matchPercentage = Math.min(
-      100,
-      Math.round(
-        (sharedInterestsCount / totalViewerInterests) * 70 +
-          (viewerProfile?.department && p.department === viewerProfile.department ? 20 : 0) +
-          (viewerProfile?.course && p.course === viewerProfile.course ? 10 : 0)
-      )
+    const sameDept = Boolean(
+      viewerProfile?.department &&
+      p.department &&
+      viewerProfile.department.toLowerCase() === p.department.toLowerCase()
     );
+    const sameCourse = Boolean(
+      viewerProfile?.course &&
+      p.course &&
+      viewerProfile.course.toLowerCase() === p.course.toLowerCase()
+    );
+
+    const totalUnique = new Set([...viewerInterests, ...(p.interests || []).map((i) => i.toLowerCase().trim())]).size;
+    const interestScore =
+      totalUnique > 0 && sharedInterestsCount > 0
+        ? Math.round((sharedInterestsCount / totalUnique) * 45 + Math.min(sharedInterestsCount * 3, 10))
+        : 0;
+    const academicScore = sameCourse ? 15 : sameDept ? 8 : 0;
+    const matchPercentage = Math.min(Math.max(15 + interestScore + academicScore, 15), 99);
+
+    const avatarKey = p.avatar_preset_id || getDeterministicAnonymousAvatar(p.id);
 
     return {
       ...p,
+      full_name: p.full_name || (p.username ? `@${p.username}` : 'Student'),
+      username: p.username ?? '',
+      avatar_url: p.avatar_url,
+      avatarKey,
+      avatar_preset_id: p.avatar_preset_id || avatarKey,
+      bio: p.bio,
+      is_ally: false,
+      is_unrevealed_match: false,
       sharedInterestsCount,
       matchPercentage,
     };
   });
 
-  // Mask real PII for any user who is not the viewer or an ally of the viewer
-  const allyList = viewerId ? await interactionModel.listAllies(viewerId, 500, 0).catch(() => []) : [];
-  const allyIds = new Set(allyList.map((a) => a.id));
-
-  const masked = enriched.map((item) => {
-    const isSelf = viewerId === item.id;
-    const isAlly = allyIds.has(item.id);
-    if (isSelf || isAlly) return item;
-    return {
-      ...item,
-      full_name: 'Anonymous Peer',
-      username: 'anonymous',
-      avatar_url: null,
-      bio: null,
-    };
-  });
-
   if (sortBy === 'match') {
-    masked.sort((a, b) => (b.matchPercentage || 0) - (a.matchPercentage || 0));
+    enriched.sort((a, b) => (b.matchPercentage || 0) - (a.matchPercentage || 0));
   } else if (sortBy === 'popular') {
     const withFollowers = await Promise.all(
-      masked.map(async (item) => {
+      enriched.map(async (item) => {
         const { followersCount } = await followModel.getCounts(item.id).catch(() => ({ followersCount: 0 }));
         return { ...item, followersCount };
       })
@@ -145,10 +193,10 @@ export async function listProfiles(
     withFollowers.sort((a, b) => (b.followersCount || 0) - (a.followersCount || 0));
     return withFollowers.slice(offset, offset + limit);
   } else if (sortBy === 'name') {
-    masked.sort((a, b) => (a.full_name || a.username || '').localeCompare(b.full_name || b.username || ''));
+    enriched.sort((a, b) => (a.full_name || a.username || '').localeCompare(b.full_name || b.username || ''));
   }
 
-  return masked.slice(offset, offset + limit);
+  return enriched.slice(offset, offset + limit);
 }
 
 /**
@@ -158,17 +206,21 @@ export async function getProfilesByIds(ids: string[], viewerId?: string): Promis
   const profiles = await profileModel.findByIds(ids);
   if (!viewerId) return profiles;
 
-  const allyList = await interactionModel.listAllies(viewerId, 500, 0).catch(() => []);
-  const allyIds = new Set(allyList.map((a) => a.id));
+  let allyIds = new Set<string>();
+  try {
+    allyIds = await interactionModel.getAllyIds(viewerId);
+  } catch {}
 
   return profiles.map((p) => {
-    if (p.id === viewerId || allyIds.has(p.id)) return p;
+    const isSelf = p.id === viewerId;
+    const isAlly = allyIds.has(p.id);
+    const fallbackKey = p.avatar_preset_id || getDeterministicAnonymousAvatar(p.id);
     return {
       ...p,
-      full_name: 'Anonymous Peer',
-      username: 'anonymous',
-      avatar_url: null,
-      bio: null,
+      avatarKey: fallbackKey,
+      avatar_preset_id: p.avatar_preset_id || fallbackKey,
+      is_ally: isSelf || isAlly,
+      is_unrevealed_match: false,
     };
   });
 }

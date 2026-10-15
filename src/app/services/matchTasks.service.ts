@@ -117,6 +117,10 @@ export async function completeTask(
  */
 async function unlockProfile(match: import('../types/matchmaking.types').MatchRow): Promise<void> {
   await matchModel.revealMatch(match.id).catch(() => {});
+  if (match.conversation_id) {
+    await upgradeConversationToAllied(match.conversation_id).catch(() => {});
+  }
+  await interactionModel.createAllyRelationship(match.user_a_id, match.user_b_id).catch(() => {});
 
   const payload = {
     matchId: match.id,

@@ -312,4 +312,38 @@ export async function hasPendingFriendRequest(userId: string, fromUserId: string
   return (data?.length ?? 0) > 0;
 }
 
+/**
+ * Delete single notification by ID and userId
+ */
+export async function deleteById(id: string, userId: string): Promise<void> {
+  const { error } = await supabaseAdmin
+    .from('notifications')
+    .delete()
+    .eq('id', id)
+    .eq('user_id', userId);
+
+  if (error) throw error;
+}
+
+/**
+ * Delete new_follower notification when follower is followed back
+ */
+export async function deleteFollowerNotification(userId: string, followerId: string): Promise<void> {
+  const { error } = await supabaseAdmin
+    .from('notifications')
+    .delete()
+    .eq('user_id', userId)
+    .or(`from_user_id.eq.${followerId},target_id.eq.${followerId}`)
+    .eq('type', 'new_follower');
+
+  if (error) {
+    await supabaseAdmin
+      .from('notifications')
+      .delete()
+      .eq('user_id', userId)
+      .eq('from_user_id', followerId)
+      .eq('type', 'new_follower');
+  }
+}
+
 

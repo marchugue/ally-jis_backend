@@ -4,6 +4,10 @@ export interface ProfileRow {
   full_name?: string | null;
   username?: string | null;
   avatar_url?: string | null;
+  avatarKey?: string | null;
+  avatar_preset_id?: string | null;
+  is_ally?: boolean;
+  is_unrevealed_match?: boolean;
   bio?: string | null;
   department?: string | null;
   course?: string | null;
