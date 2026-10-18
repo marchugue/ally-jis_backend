@@ -105,14 +105,14 @@ export const ALL_STAGE_TASKS: StageTask[] = [
     label: 'Play a game together',
     description: 'Play a campus mini-game together for at least 5 minutes',
     basePoints: 2,
-    unlockedAtStage: 2,
+    unlockedAtStage: 1,
   },
   {
     id: 'send_photo',
     label: 'Share a photo',
     description: 'Each of you share at least 1 photo in chat',
     basePoints: 3,
-    unlockedAtStage: 3,
+    unlockedAtStage: 1,
   },
 ];
 
@@ -144,9 +144,9 @@ export function getStageCapabilities(stage: number, isRevealed: boolean = false)
   return {
     stage,
     stageName: stageName(stage),
-    canChat: stage >= 1,
-    canPlayGames: stage >= 2,
-    canUploadImages: stage >= 3,
+    canChat: true,
+    canPlayGames: true, // Games unlocked from day 1, no stage 2 requirement
+    canUploadImages: true, // Photos unlocked from day 1, no stage 3 requirement
     feedUnlocked: stage >= 4,
     isAllies: stage >= 4,
     isRevealed,

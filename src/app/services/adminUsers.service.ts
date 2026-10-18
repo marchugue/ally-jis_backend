@@ -2,6 +2,7 @@
 
 import * as adminUsersModel from '../models/adminUsers.model';
 import * as adminModel from '../models/admin.model';
+import { emitToUser } from './realtime.service';
 import * as passwordResetService from './passwordReset.service';
 import * as profileModel from '../models/profile.model';
 import { HttpError } from '../types/auth.types';
@@ -29,6 +30,7 @@ export async function getUserDetail(userId: string): Promise<AdminUserDetail> {
 export async function banUser(adminId: string, userId: string, ip?: string): Promise<void> {
   await adminUsersModel.setBanned(userId, true);
   await adminUsersModel.invalidateSessions(userId); // a ban should also end their current session
+  emitToUser(userId, 'auth:revoked', { reason: 'banned' });
   await log(adminId, 'ban_user', userId, ip);
 }
 
@@ -40,6 +42,7 @@ export async function unbanUser(adminId: string, userId: string, ip?: string): P
 export async function suspendUser(adminId: string, userId: string, until: string | null, ip?: string): Promise<void> {
   await adminUsersModel.setSuspended(userId, true, until);
   await adminUsersModel.invalidateSessions(userId);
+  emitToUser(userId, 'auth:revoked', { reason: 'suspended', until });
   await log(adminId, 'suspend_user', userId, ip, { until });
 }
 
@@ -60,6 +63,7 @@ export async function unverifyUser(adminId: string, userId: string, ip?: string)
 
 export async function forceLogout(adminId: string, userId: string, ip?: string): Promise<void> {
   await adminUsersModel.invalidateSessions(userId);
+  emitToUser(userId, 'auth:revoked', { reason: 'force_logout' });
   await log(adminId, 'force_logout', userId, ip);
 }
 

@@ -8,6 +8,8 @@
 // req/res.
 
 import * as authModel from '../models/auth.model';
+import * as adminUsersModel from '../models/adminUsers.model';
+import { emitToUser } from './realtime.service';
 import type { SupabaseAuthUser, SupabaseSession } from '../models/auth.model';
 import { AuthSession, HttpError, LoginPayload, ProfileRow, RegisterPayload, EmailStatus, RegisterResponse } from '../types/auth.types';
 import * as adminSettingsService from './adminSettings.service';
@@ -272,6 +274,17 @@ export async function login(payload: LoginPayload): Promise<AuthSession> {
 }
 
 export async function logout(accessToken: string): Promise<void> {
+  if (accessToken) {
+    try {
+      const user = await authModel.getUserFromToken(accessToken);
+      if (user?.id) {
+        await adminUsersModel.invalidateSessions(user.id);
+        emitToUser(user.id, 'auth:revoked', { reason: 'logout' });
+      }
+    } catch {
+      // Ignore token decode errors during logout
+    }
+  }
   await authModel.signOut(accessToken);
 }
 

@@ -3,6 +3,10 @@ import { getRedisClient, isRedisConnected } from '../../config/redis';
 
 const ONLINE_WINDOW_SECONDS = 60;
 const PRESENCE_KEY = 'presence:online';
+const PRESENCE_GAME_KEY = 'presence:game:online';
+
+// In-memory fallback map for game-specific presence when Redis is offline
+const inMemoryGamePresence = new Map<string, number>();
 
 /**
  * POST /presence/heartbeat
@@ -10,13 +14,22 @@ const PRESENCE_KEY = 'presence:online';
  * When Redis is available, updates in-memory immediately and schedules background DB sync.
  * When Redis is offline, falls back directly to PostgreSQL user_presence table.
  */
-export async function recordHeartbeat(userId: string): Promise<void> {
+export async function recordHeartbeat(userId: string, platform?: string): Promise<void> {
   const now = Date.now();
   const client = getRedisClient();
+
+  if (platform === 'game') {
+    inMemoryGamePresence.set(userId, now);
+  }
 
   if (client && isRedisConnected()) {
     try {
       await client.zadd(PRESENCE_KEY, now, userId);
+
+      if (platform === 'game') {
+        await client.zadd(PRESENCE_GAME_KEY, now, userId);
+      }
+
       // Best-effort non-blocking sync to PostgreSQL for admin dashboard history
       Promise.resolve(
         supabaseAdmin
@@ -96,3 +109,53 @@ export async function findOnlineUserIds(): Promise<string[]> {
   return rawUserIds;
 }
 
+/**
+ * Returns active user IDs specifically on the Game Portal in the last 60 seconds.
+ */
+export async function findGameOnlineUserIds(): Promise<string[]> {
+  const now = Date.now();
+  const cutoffMs = now - ONLINE_WINDOW_SECONDS * 1000;
+  const client = getRedisClient();
+
+  let rawGameUserIds: string[] = [];
+
+  if (client && isRedisConnected()) {
+    try {
+      client.zremrangebyscore(PRESENCE_GAME_KEY, '-inf', cutoffMs).catch(() => {});
+      rawGameUserIds = await client.zrangebyscore(PRESENCE_GAME_KEY, cutoffMs, '+inf');
+    } catch (err) {
+      console.warn('[Presence] Redis game online check error:', (err as Error).message);
+    }
+  }
+
+  // Check in-memory fallback
+  if (rawGameUserIds.length === 0 && inMemoryGamePresence.size > 0) {
+    for (const [userId, timestamp] of inMemoryGamePresence.entries()) {
+      if (timestamp >= cutoffMs) {
+        rawGameUserIds.push(userId);
+      } else {
+        inMemoryGamePresence.delete(userId);
+      }
+    }
+  }
+
+  if (rawGameUserIds.length === 0) {
+    return [];
+  }
+
+  // Filter out users who disabled show_online_status
+  try {
+    const { data: hiddenRows } = await supabaseAdmin
+      .from('user_preferences')
+      .select('user_id')
+      .in('user_id', rawGameUserIds)
+      .eq('show_online_status', false);
+
+    if (hiddenRows && hiddenRows.length > 0) {
+      const hiddenSet = new Set(hiddenRows.map((r) => r.user_id));
+      return rawGameUserIds.filter((id) => !hiddenSet.has(id));
+    }
+  } catch {}
+
+  return rawGameUserIds;
+}

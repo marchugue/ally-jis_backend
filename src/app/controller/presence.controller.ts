@@ -11,7 +11,8 @@ import { asyncHandler } from '../utils/asyncHandler';
 
 // POST /presence/heartbeat
 export const heartbeat = asyncHandler(async (req: Request, res: Response) => {
-  await presenceService.heartbeat(req.userId as string);
+  const platform = (req.body?.platform || req.query?.platform || req.body?.client) as string | undefined;
+  await presenceService.heartbeat(req.userId as string, platform);
   res.status(204).send();
 });
 
