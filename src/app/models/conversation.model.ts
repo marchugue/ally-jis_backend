@@ -1,5 +1,6 @@
 import { supabaseAdmin } from '../../config/supabase';
 import type { ConversationMemberRow, ConversationRow, MessageReactionRow, MessageRow } from '../types/conversation.types';
+import { findSessionsByInviteMessageIds, toInviteInfo } from './game.model';
 
 const MEMBER_PROFILE_COLUMNS = 'id, full_name, username, avatar_url, interests, course, department';
 
@@ -353,9 +354,33 @@ async function attachReactions(messages: MessageRow[]): Promise<MessageRow[]> {
   }));
 }
 
+/**
+ * Decorates messages that are 2-player game invites with `game_invite`
+ * (session id, game, live status) so chat clients can render an
+ * Accept / Play card. Best-effort: if the game tables aren't migrated yet
+ * the messages are returned untouched and chat keeps working.
+ */
+export async function attachGameInvites(messages: MessageRow[]): Promise<MessageRow[]> {
+  const ids = messages.map((message) => message.id).filter(Boolean);
+  if (ids.length === 0) return messages;
+
+  try {
+    const sessions = await findSessionsByInviteMessageIds(ids);
+    if (sessions.length === 0) return messages;
+    const byMessage = new Map(sessions.map((session) => [session.invite_message_id as string, session]));
+    return messages.map((message) => {
+      const session = byMessage.get(message.id);
+      return session ? { ...message, game_invite: toInviteInfo(session) } : message;
+    });
+  } catch {
+    return messages;
+  }
+}
+
 async function attachMessageMetadata(messages: MessageRow[]): Promise<MessageRow[]> {
   const withReplies = await attachRepliedMessages(messages);
-  return attachReactions(withReplies);
+  const withReactions = await attachReactions(withReplies);
+  return attachGameInvites(withReactions);
 }
 
 export interface FindMessagesOptions {

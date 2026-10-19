@@ -6,6 +6,7 @@ import { initSockets } from './sockets';
 import { reconcileStaleMatches } from './app/services/matchmaking.service';
 import { initStreakReminderScheduler } from './app/services/streakReminder.service';
 import { initUnverifiedRegistrationCleaner } from './app/services/auth.service';
+import { initGameSweeper } from './app/services/game.service';
 
 process.on('uncaughtException', (err) => {
   console.error('uncaughtException:', err);
@@ -38,6 +39,9 @@ async function bootstrap() {
 
     // Initialize periodic cleaner for stale/abandoned unverified registrations
     initUnverifiedRegistrationCleaner();
+
+    // 2-player games: expire stale invites, re-arm in-memory deadline timers after a restart
+    initGameSweeper();
   });
 
 

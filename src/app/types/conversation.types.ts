@@ -25,6 +25,15 @@ export interface MessageRow {
   replied_message?: MessageReplyRow | MessageReplyRow[] | null;
   reactions?: MessageReactionRow[];
   status?: 'sending' | 'sent' | 'delivered' | 'read' | 'failed';
+  /** Present when this message is a 2-player game invite (renders as an Accept / Play card). */
+  game_invite?: {
+    sessionId: string;
+    gameId: 'ttt' | 'clue' | 'merge';
+    status: 'invited' | 'active' | 'finished' | 'declined' | 'cancelled' | 'expired' | 'abandoned';
+    hostId: string;
+    guestId: string;
+    expiresAt: string | null;
+  } | null;
   /** True when the sender deleted the message for everyone. */
   is_deleted?: boolean;
   deleted_at?: string | null;

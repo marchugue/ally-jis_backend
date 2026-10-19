@@ -13,6 +13,7 @@ import { createAdapter } from '@socket.io/redis-adapter';
 import * as authModel from '../app/models/auth.model';
 import { attachSocketServer } from '../app/services/realtime.service';
 import { relayTyping } from '../app/services/conversation.service';
+import * as gameService from '../app/services/game.service';
 import { env } from '../config/env';
 import { getRedisClient, getRedisSubClient } from '../config/redis';
 
@@ -104,6 +105,66 @@ export function initSockets(httpServer: HTTPServer): SocketIOServer {
       const conversationId = payload?.conversationId;
       if (!conversationId) return;
       void relayTyping(conversationId, userId, Boolean(payload?.isTyping));
+    });
+
+    // ── 2-player games ──────────────────────────────────────────────────
+    // Every handler takes an optional ack callback and answers
+    // { ok: true, ... } or { ok: false, message } — the server is the only
+    // authority on game state; clients only ever send intents.
+    type Ack = (response: Record<string, unknown>) => void;
+    const respond = async (ack: Ack | undefined, work: () => Promise<Record<string, unknown> | void>) => {
+      try {
+        const extra = (await work()) ?? {};
+        ack?.({ ok: true, ...extra });
+      } catch (err: any) {
+        ack?.({ ok: false, message: err?.message ?? 'Game error', status: err?.status ?? 500 });
+      }
+    };
+
+    socket.on('game:join', (payload: { sessionId?: string }, ack?: Ack) => {
+      void respond(ack, async () => {
+        if (!payload?.sessionId) throw new Error('sessionId is required');
+        const session = await gameService.joinSession(payload.sessionId, userId, socket.id);
+        return { session };
+      });
+    });
+
+    socket.on('game:move', (payload: { sessionId?: string; move?: unknown }, ack?: Ack) => {
+      void respond(ack, async () => {
+        if (!payload?.sessionId) throw new Error('sessionId is required');
+        await gameService.handleMove(payload.sessionId, userId, payload.move);
+      });
+    });
+
+    // Merge race: dedicated alias so clients can stream scores cheaply.
+    socket.on('game:score', (payload: { sessionId?: string; score?: number; over?: boolean }, ack?: Ack) => {
+      void respond(ack, async () => {
+        if (!payload?.sessionId) throw new Error('sessionId is required');
+        await gameService.handleMove(payload.sessionId, userId, {
+          type: 'score',
+          score: payload.score,
+          over: payload.over,
+        });
+      });
+    });
+
+    socket.on('game:rematch', (payload: { sessionId?: string }, ack?: Ack) => {
+      void respond(ack, async () => {
+        if (!payload?.sessionId) throw new Error('sessionId is required');
+        const session = await gameService.requestRematch(payload.sessionId, userId);
+        return { started: Boolean(session), session };
+      });
+    });
+
+    socket.on('game:leave', (payload: { sessionId?: string }, ack?: Ack) => {
+      void respond(ack, async () => {
+        if (!payload?.sessionId) throw new Error('sessionId is required');
+        await gameService.leaveSession(payload.sessionId, userId);
+      });
+    });
+
+    socket.on('disconnect', () => {
+      gameService.handleSocketDisconnect(userId, socket.id);
     });
   });
 
