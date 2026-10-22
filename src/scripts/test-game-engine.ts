@@ -142,8 +142,10 @@ test('guesser never sees the word; giver does', () => {
   const guesserView = engine.publicState(s, s.state.guesserId) as any;
   const giverView = engine.publicState(s, s.state.giverId) as any;
   assert.equal(guesserView.word, undefined);
+  assert.equal(guesserView.wordLength, wordOf(s).length);
   assert.equal(guesserView.allClues, undefined);
   assert.equal(giverView.word, wordOf(s));
+  assert.equal(giverView.wordLength, wordOf(s).length);
   assert.equal(giverView.allClues.length, 4);
   assert.equal(JSON.stringify(guesserView).includes(wordOf(s)), false, 'word leaked in guesser payload');
 });
@@ -185,6 +187,28 @@ test('wrong guesses are recorded; the right guess scores base + time + clue bonu
   assert.equal(guesserScore, patch.state.result.guesserPoints);
   // Word is now public for the (previous) guesser too.
   assert.equal((engine.publicState(apply(s, patch), guesser) as any).word, wordOf(s));
+});
+
+test('more clues revealed reduces guesser clue bonus by 20 pts per extra clue', () => {
+  let s = session('clue');
+  const start = T0 + engine.CLUE_INTRO_MS + 1_000;
+  const guesser = s.state.guesserId;
+  const giver = s.state.giverId;
+
+  // 1 clue (default): bonus is 60
+  const patch1 = engine.applyMove(s, guesser, { type: 'guess', word: wordOf(s) }, start);
+  assert.equal(patch1.state.result.breakdown.clueBonus, 60);
+
+  // Ask for 2nd clue: bonus drops to 40
+  s = apply(s, engine.applyMove(s, guesser, { type: 'request_clue' }, start));
+  s = apply(s, engine.applyMove(s, giver, { type: 'give_clue', clueIndex: 1 }, start + 500));
+  const patch2 = engine.applyMove(s, guesser, { type: 'guess', word: wordOf(s) }, start + 1_000);
+  assert.equal(patch2.state.result.breakdown.clueBonus, 40);
+
+  // With all 4 clues revealed: bonus drops to 0
+  const s4 = { ...s, state: { ...s.state, revealed: [0, 1, 2, 3] } };
+  const patch4 = engine.applyMove(s4, guesser, { type: 'guess', word: wordOf(s4) }, start + 1_000);
+  assert.equal(patch4.state.result.breakdown.clueBonus, 0);
 });
 
 test('round timeout stumps the guesser and gives the giver the bonus', () => {

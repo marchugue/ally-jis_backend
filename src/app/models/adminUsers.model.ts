@@ -13,6 +13,55 @@ import type { AdminUserDetail, AdminUserListItem, ListUsersParams } from '../typ
 const LIST_COLUMNS =
   'id, username, full_name, email, avatar_url, department, course, year_level, role, is_banned, is_suspended, suspended_until, admin_verified, created_at, email_type, chmsu_auto_verified, pending_student_verification, student_verification_status, student_id_url, student_id_back_url';
 
+export function resolveRealFullName(row: any): string {
+  if (!row) return 'Student';
+
+  // 1. If full_name is present and is a distinct real name (not "anonymous", not "Anonymous Peer")
+  if (row.full_name && typeof row.full_name === 'string') {
+    const fn = row.full_name.trim();
+    const lowerFn = fn.toLowerCase();
+    if (lowerFn !== 'anonymous' && lowerFn !== 'anonymous peer' && lowerFn !== 'unnamed') {
+      // If it doesn't match the lowercase username, it's likely a real name
+      if (!row.username || lowerFn !== row.username.toLowerCase().trim()) {
+        return fn;
+      }
+    }
+  }
+
+  // 2. Derive legal name from CHMSU institutional email (firstname.lastname@chmsu.edu.ph)
+  if (row.email && typeof row.email === 'string' && row.email.toLowerCase().endsWith('@chmsu.edu.ph')) {
+    const local = row.email.split('@')[0];
+    const parts = local.split(/[._-]/).filter(Boolean);
+    if (parts.length > 0) {
+      return parts.map((p: string) => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase()).join(' ');
+    }
+  }
+
+  // 3. If full_name exists and is not anonymous
+  if (row.full_name && typeof row.full_name === 'string') {
+    const fn = row.full_name.trim();
+    const lowerFn = fn.toLowerCase();
+    if (lowerFn !== 'anonymous' && lowerFn !== 'anonymous peer' && lowerFn !== 'unnamed') {
+      return fn;
+    }
+  }
+
+  // 4. If username exists and is not anonymous
+  if (row.username && typeof row.username === 'string') {
+    const un = row.username.trim();
+    if (un.toLowerCase() !== 'anonymous') {
+      return un;
+    }
+  }
+
+  // 5. Fallback to email username
+  if (row.email && typeof row.email === 'string') {
+    return row.email.split('@')[0];
+  }
+
+  return 'Student';
+}
+
 async function attachLastSeen(users: any[]): Promise<AdminUserListItem[]> {
   if (users.length === 0) return [];
   const { data, error } = await supabaseAdmin
@@ -21,7 +70,11 @@ async function attachLastSeen(users: any[]): Promise<AdminUserListItem[]> {
     .in('user_id', users.map((u) => u.id));
   if (error) throw error;
   const byId = new Map((data ?? []).map((r) => [r.user_id, r.last_seen_at as string]));
-  return users.map((u) => ({ ...u, last_seen_at: byId.get(u.id) ?? null }));
+  return users.map((u) => ({
+    ...u,
+    full_name: resolveRealFullName(u),
+    last_seen_at: byId.get(u.id) ?? null
+  }));
 }
 
 export async function listUsers(params: ListUsersParams): Promise<{ items: AdminUserListItem[]; total: number }> {
@@ -65,12 +118,16 @@ export async function getUserDetail(userId: string): Promise<AdminUserDetail | n
   let student_id_back_url = (profile as any).student_id_back_url;
   let student_verification_status = (profile as any).student_verification_status;
   let pending_student_verification = (profile as any).pending_student_verification;
+  let authFullName: string | null = null;
 
   // Fallback to Supabase Auth user_metadata if profile column is empty
   try {
     const { data: authUserData } = await supabaseAdmin.auth.admin.getUserById(userId);
     if (authUserData?.user?.user_metadata) {
       const meta = authUserData.user.user_metadata;
+      if (meta.full_name && typeof meta.full_name === 'string') {
+        authFullName = meta.full_name;
+      }
       if (!student_id_url && meta.student_id_url) {
         student_id_url = meta.student_id_url;
       }
@@ -94,8 +151,14 @@ export async function getUserDetail(userId: string): Promise<AdminUserDetail | n
     supabaseAdmin.from('reports').select('id', { count: 'exact', head: true }).eq('reported_user_id', userId),
   ]);
 
+  const resolvedName = resolveRealFullName({
+    ...profile,
+    full_name: (profile as any).full_name || authFullName,
+  });
+
   return {
     ...(profile as any),
+    full_name: resolvedName,
     student_id_url: student_id_url ?? null,
     student_id_back_url: student_id_back_url ?? null,
     student_verification_status: student_verification_status ?? 'pending',

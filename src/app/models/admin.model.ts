@@ -2,6 +2,7 @@
 
 import { supabaseAdmin } from '../../config/supabase';
 import type { AdminActivityLogRow, AdminRole, Permission, RolePermissionRow, TimeSeriesPoint } from '../types/admin.types';
+import { resolveRealFullName } from './adminUsers.model';
 
 export async function getUserRole(userId: string): Promise<string | null> {
   const { data, error } = await supabaseAdmin.from('profiles').select('role').eq('id', userId).maybeSingle();
@@ -40,7 +41,10 @@ export async function listAdmins(): Promise<any[]> {
     .neq('role', 'student')
     .order('role', { ascending: false });
   if (error) throw error;
-  return data ?? [];
+  return (data ?? []).map((admin) => ({
+    ...admin,
+    full_name: resolveRealFullName(admin),
+  }));
 }
 
 export async function setUserRole(userId: string, role: string): Promise<void> {
@@ -72,7 +76,42 @@ export async function listActivityLog(limit: number, offset: number): Promise<Ad
     .order('created_at', { ascending: false })
     .range(offset, offset + limit - 1);
   if (error) throw error;
-  return (data ?? []) as AdminActivityLogRow[];
+  const rows = (data ?? []) as AdminActivityLogRow[];
+  if (rows.length === 0) return [];
+
+  const userIds = Array.from(
+    new Set(
+      rows
+        .flatMap((r) => [r.admin_id, r.target_user_id].filter(Boolean) as string[])
+    )
+  );
+
+  if (userIds.length === 0) return rows;
+
+  const { data: profiles } = await supabaseAdmin
+    .from('profiles')
+    .select('id, username, full_name, email, avatar_url')
+    .in('id', userIds);
+
+  const profileMap = new Map<string, any>();
+  for (const p of profiles ?? []) {
+    profileMap.set(p.id, p);
+  }
+
+  return rows.map((r) => {
+    const adminProf = profileMap.get(r.admin_id);
+    const targetProf = r.target_user_id ? profileMap.get(r.target_user_id) : null;
+    return {
+      ...r,
+      admin_username: adminProf?.username ?? null,
+      admin_name: adminProf ? resolveRealFullName(adminProf) : null,
+      admin_email: adminProf?.email ?? null,
+      target_username: targetProf?.username ?? null,
+      target_full_name: targetProf ? resolveRealFullName(targetProf) : null,
+      target_email: targetProf?.email ?? null,
+      target_avatar: targetProf?.avatar_url ?? null,
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------

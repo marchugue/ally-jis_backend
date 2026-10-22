@@ -6,15 +6,18 @@
 
 import { Router } from 'express';
 import * as gameController from '../app/controller/game.controller';
-import { authMiddleware } from '../app/middleware/auth.middleware';
+import { authMiddleware, optionalAuthMiddleware } from '../app/middleware/auth.middleware';
 
 const router = Router();
+
+// Leaderboard is accessible to guests and authenticated users alike.
+// Authenticated requests populate `me` standing and allow friend-scope filtering.
+router.get('/leaderboard', optionalAuthMiddleware, gameController.leaderboard);
 
 router.use(authMiddleware);
 
 // Static paths first so they are never swallowed by /:id
 router.get('/open', gameController.open);
-router.get('/leaderboard', gameController.leaderboard);
 router.get('/me/stats', gameController.myStats);
 
 router.post('/invite', gameController.invite);

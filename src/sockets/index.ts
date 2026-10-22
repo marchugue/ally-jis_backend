@@ -14,6 +14,7 @@ import * as authModel from '../app/models/auth.model';
 import { attachSocketServer } from '../app/services/realtime.service';
 import { relayTyping } from '../app/services/conversation.service';
 import * as gameService from '../app/services/game.service';
+import * as presenceService from '../app/services/presence.service';
 import { env } from '../config/env';
 import { getRedisClient, getRedisSubClient } from '../config/redis';
 
@@ -76,7 +77,14 @@ export function initSockets(httpServer: HTTPServer): SocketIOServer {
         return;
       }
 
+      const platform =
+        (socket.handshake.auth?.platform as string | undefined) ||
+        (socket.handshake.query?.platform as string | undefined) ||
+        (socket.handshake.headers['x-platform'] as string | undefined) ||
+        'web';
+
       socket.data.userId = user.id;
+      socket.data.platform = platform;
       next();
     } catch {
       next(new Error('Invalid or expired token'));
@@ -91,10 +99,15 @@ export function initSockets(httpServer: HTTPServer): SocketIOServer {
     }
 
     const userId = socket.data.userId as string;
+    const platform = (socket.data.platform as string | undefined) || 'web';
+
     // All real-time events (matchmaking lifecycle + conversation
     // messages/typing) are emitted to `user:<id>` rooms — see
     // emitToUser() in realtime.service.ts.
     socket.join(`user:${userId}`);
+
+    // Register active socket for real-time presence across all platforms
+    void presenceService.handleSocketConnect(userId, socket.id, platform);
 
     // Typing indicator for any conversation (regular or anonymous).
     // `fromUserId` is always the authenticated socket's own id (never
@@ -165,6 +178,7 @@ export function initSockets(httpServer: HTTPServer): SocketIOServer {
 
     socket.on('disconnect', () => {
       gameService.handleSocketDisconnect(userId, socket.id);
+      presenceService.handleSocketDisconnect(userId, socket.id);
     });
   });
 

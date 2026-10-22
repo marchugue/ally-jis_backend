@@ -279,7 +279,7 @@ function clueItem(state: any) {
 }
 
 function clueBonusFor(revealedCount: number): number {
-  return revealedCount <= 1 ? 60 : revealedCount === 2 ? 40 : revealedCount === 3 ? 20 : 10;
+  return revealedCount <= 1 ? 60 : revealedCount === 2 ? 40 : revealedCount === 3 ? 20 : 0;
 }
 
 function resolveClueRound(
@@ -528,6 +528,7 @@ export function publicState(session: EngineSession, viewerId: string): Record<st
         roundEndsAt: state.roundEndsAt,
         nextRoundAt: state.nextRoundAt ?? null,
         category: item.category,
+        wordLength: item.word.length,
         revealedClues: [...state.revealed]
           .sort((a: number, b: number) => a - b)
           .map((index: number) => ({ index, text: item.clues[index] })),

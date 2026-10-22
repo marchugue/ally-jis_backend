@@ -21,3 +21,19 @@ export const online = asyncHandler(async (req: Request, res: Response) => {
   const result = await presenceService.listOnline();
   res.status(200).json(result);
 });
+
+// POST /presence/webhook
+// Real-time webhook endpoint for online presence across all platforms
+export const webhook = asyncHandler(async (req: Request, res: Response) => {
+  const configuredSecret = process.env.PRESENCE_WEBHOOK_SECRET || process.env.WEBHOOK_SECRET;
+  if (configuredSecret) {
+    const headerSecret = req.headers['x-webhook-secret'] || req.headers['x-api-key'] || req.query.secret;
+    if (headerSecret !== configuredSecret) {
+      res.status(401).json({ success: false, message: 'Invalid webhook secret' });
+      return;
+    }
+  }
+
+  const result = await presenceService.handlePresenceWebhook(req.body);
+  res.status(result.success ? 200 : 400).json(result);
+});

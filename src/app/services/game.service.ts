@@ -801,28 +801,33 @@ export interface LeaderboardItem {
   isMe: boolean;
 }
 
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 export async function getLeaderboard(
-  userId: string,
+  userId: string | undefined,
   gameId: unknown,
   scope: 'global' | 'friends',
   limit = 50,
 ): Promise<{ gameId: GameId; scope: string; items: LeaderboardItem[]; me: LeaderboardItem | null }> {
-  if (!engine.isGameId(gameId)) throw new HttpError('Unknown game', 400);
+  const targetGame: GameId = engine.isGameId(gameId) ? gameId : 'clue';
   const cappedLimit = Math.min(Math.max(Math.floor(limit) || 50, 1), 100);
+  const isValidUser = typeof userId === 'string' && UUID_REGEX.test(userId);
 
   let rows: gameModel.LeaderboardRow[];
-  if (scope === 'friends') {
+  if (scope === 'friends' && isValidUser) {
     const allyIds = await findAcceptedConnectionIds(userId);
-    rows = await gameModel.listLeaderboard(gameId, { userIds: [...allyIds, userId], limit: 200 });
+    rows = await gameModel.listLeaderboard(targetGame, { userIds: [...allyIds, userId], limit: 200 });
+  } else if (scope === 'friends' && !isValidUser) {
+    rows = [];
   } else {
-    rows = await gameModel.listLeaderboard(gameId, { limit: cappedLimit });
+    rows = await gameModel.listLeaderboard(targetGame, { limit: cappedLimit });
   }
 
   // For the global board the caller may sit below the visible cut-off.
-  let meRow = rows.find((r) => r.user_id === userId) ?? null;
+  let meRow = isValidUser ? rows.find((r) => r.user_id === userId) ?? null : null;
   let meRank: number | null = meRow ? rows.indexOf(meRow) + 1 : null;
-  if (!meRow && scope === 'global') {
-    meRow = await gameModel.getLeaderboardRow(userId, gameId);
+  if (!meRow && scope === 'global' && isValidUser) {
+    meRow = await gameModel.getLeaderboardRow(userId, targetGame);
     if (meRow) meRank = (await gameModel.countPlayersAhead(meRow)) + 1;
   }
 
@@ -845,12 +850,12 @@ export async function getLeaderboard(
       gamesPlayed: row.games_played,
       points: row.points,
       bestScore: row.best_score,
-      isMe: row.user_id === userId,
+      isMe: Boolean(isValidUser && row.user_id === userId),
     };
   };
 
   return {
-    gameId,
+    gameId: targetGame,
     scope,
     items: rows.slice(0, scope === 'friends' ? 200 : cappedLimit).map((row, i) => toItem(row, i + 1)),
     me: meRow && meRank ? toItem(meRow, meRank) : null,

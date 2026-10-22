@@ -11,10 +11,33 @@ import { getDeterministicAnonymousAvatar } from '../constants/anonymousIdentity'
  * it masks their identity to enforce complete end-to-end anonymity.
  */
 export function anonymityMiddleware(req: Request, res: Response, next: NextFunction): void {
+  const url = req.originalUrl || req.url || '';
+  if (
+    url.startsWith('/api/admin') ||
+    url.startsWith('/admin') ||
+    url.startsWith('/api/activity-log') ||
+    url.startsWith('/activity-log') ||
+    url.startsWith('/api/activity-logs') ||
+    url.startsWith('/activity-logs')
+  ) {
+    return next();
+  }
+
   const originalJson = res.json.bind(res);
 
   res.json = function (body: any): Response {
     if (!body || typeof body !== 'object') {
+      return originalJson(body);
+    }
+
+    const currentUrl = req.originalUrl || req.url || '';
+    if (
+      currentUrl.includes('/admin') ||
+      currentUrl.includes('/activity-log') ||
+      (req as any).adminRole ||
+      (req as any).isAdmin ||
+      res.locals?.skipAnonymity
+    ) {
       return originalJson(body);
     }
 

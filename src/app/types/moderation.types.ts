@@ -16,6 +16,7 @@ export interface CreateReportParams {
   violationId: string;
   conversationId?: string | null;
   postId?: string | null;
+  messageId?: string | null;
   notes?: string | null;
 }
 
@@ -34,6 +35,7 @@ export interface ReportUserPayload {
   violationId: string;
   conversationId?: string | null;
   postId?: string | null;
+  messageId?: string | null;
   notes?: string | null;
 }
 
@@ -47,4 +49,60 @@ export interface BlockedUserRow {
 
 export interface UnblockUserResult {
   success: true;
+}
+
+// Restrict types
+export interface RestrictRow {
+  restricter_id: string;
+  restricted_id: string;
+  created_at: string;
+}
+
+export interface RestrictUserPayload {
+  restrictedUserId: string;
+}
+
+export interface RestrictUserResult {
+  success: true;
+  restrictedAt: string;
+}
+
+export interface UnrestrictUserResult {
+  success: true;
+}
+
+export interface RestrictedUserRow {
+  id: string;
+  fullName: string | null;
+  username: string | null;
+  avatarUrl: string | null;
+  restrictedAt: string;
+}
+
+// Mute types
+export interface MuteRow {
+  muter_id: string;
+  muted_id: string;
+  created_at: string;
+}
+
+export interface MuteUserPayload {
+  mutedUserId: string;
+}
+
+export interface MuteUserResult {
+  success: true;
+  mutedAt: string;
+}
+
+export interface UnmuteUserResult {
+  success: true;
+}
+
+export interface MutedUserRow {
+  id: string;
+  fullName: string | null;
+  username: string | null;
+  avatarUrl: string | null;
+  mutedAt: string;
 }

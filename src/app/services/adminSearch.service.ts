@@ -13,7 +13,7 @@ import * as adminModel from '../models/admin.model';
 
 export interface GlobalSearchResult {
   users: { id: string; username: string | null; full_name: string | null; email: string }[];
-  reports: { id: string; reported_username: string | null; violation_label: string; status: string }[];
+  reports: { id: string; reported_username: string | null; reported_name?: string | null; violation_label: string; status: string }[];
   admins: { id: string; username: string | null; full_name: string | null; role: string }[];
 }
 
@@ -31,7 +31,15 @@ export async function search(query: string): Promise<GlobalSearchResult> {
 
   const q = trimmed.toLowerCase();
   const matchingReports = reportsRes.items
-    .filter((r) => (r.reported_username ?? '').toLowerCase().includes(q) || r.violation_label.toLowerCase().includes(q))
+    .filter(
+      (r) =>
+        (r.reported_username ?? '').toLowerCase().includes(q) ||
+        (r.reported_name ?? '').toLowerCase().includes(q) ||
+        (r.reported_email ?? '').toLowerCase().includes(q) ||
+        (r.reporter_username ?? '').toLowerCase().includes(q) ||
+        (r.reporter_name ?? '').toLowerCase().includes(q) ||
+        r.violation_label.toLowerCase().includes(q)
+    )
     .slice(0, RESULT_CAP);
   const matchingAdmins = (allAdmins as any[])
     .filter((a) => (a.username ?? '').toLowerCase().includes(q) || (a.full_name ?? '').toLowerCase().includes(q) || (a.email ?? '').toLowerCase().includes(q))
@@ -39,7 +47,13 @@ export async function search(query: string): Promise<GlobalSearchResult> {
 
   return {
     users: usersRes.items.map((u) => ({ id: u.id, username: u.username, full_name: u.full_name, email: u.email })),
-    reports: matchingReports.map((r) => ({ id: r.id, reported_username: r.reported_username, violation_label: r.violation_label, status: r.status })),
+    reports: matchingReports.map((r) => ({
+      id: r.id,
+      reported_username: r.reported_username,
+      reported_name: r.reported_name ?? null,
+      violation_label: r.violation_label,
+      status: r.status,
+    })),
     admins: matchingAdmins.map((a) => ({ id: a.id, username: a.username, full_name: a.full_name, role: a.role })),
   };
 }

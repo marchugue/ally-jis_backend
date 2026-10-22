@@ -168,6 +168,19 @@ export async function dispatchMessageNotification(input: {
   isAnonymous?: boolean;
 }): Promise<void> {
   const { recipientId, senderId, senderName, conversationId, content, isAnonymous } = input;
+
+  // Check if recipient has muted this sender
+  try {
+    const { isMuted } = await import('../models/moderation.model');
+    const muted = await isMuted(recipientId, senderId);
+    if (muted) {
+      // Recipient has muted the sender — suppress notifications and push alerts
+      return;
+    }
+  } catch (err) {
+    console.warn('[dispatchMessageNotification] Failed to check mute status:', err);
+  }
+
   const groupKey = `conversation:${conversationId}`;
   const category: NotificationCategory = 'messages';
   const type = isAnonymous ? 'anon_match' : 'message';
@@ -178,6 +191,7 @@ export async function dispatchMessageNotification(input: {
 
   // Check if an unread notification exists for this conversation
   const existing = await notificationModel.findUnreadByConversation(recipientId, conversationId);
+
 
   let finalNotificationId: string;
   let finalUnreadCount = 1;
@@ -345,6 +359,14 @@ export async function dispatchConnectionRequestNotification(input: {
   isAnonymous?: boolean;
 }): Promise<void> {
   const { recipientId, requesterId, requesterName, conversationId, isAnonymous } = input;
+
+  // Check if recipient has muted this requester
+  try {
+    const { isMuted } = await import('../models/moderation.model');
+    const muted = await isMuted(recipientId, requesterId);
+    if (muted) return;
+  } catch {}
+
   const groupKey = `connection:${requesterId}`;
   const category: NotificationCategory = 'connections';
   const type = isAnonymous ? 'friend_request' : 'connection_request';
@@ -353,6 +375,7 @@ export async function dispatchConnectionRequestNotification(input: {
   const plainDesc = isAnonymous
     ? 'An anonymous peer wants to connect with you! Say hello in anonymous chat.'
     : `${requesterName} sent you a connection request.`;
+
 
   const descWithMeta = formatDescriptionWithMeta(plainDesc, {
     targetId: conversationId || requesterId,
@@ -864,6 +887,15 @@ export async function dispatchActivityNotification(input: {
     childId,
     category = (type === 'accepted' || type.includes('stage') || type.includes('unlocked') ? 'ally' : 'activity') as NotificationCategory,
   } = input;
+
+  if (fromUserId) {
+    try {
+      const { isMuted } = await import('../models/moderation.model');
+      const muted = await isMuted(recipientId, fromUserId);
+      if (muted) return;
+    } catch {}
+  }
+
 
   const groupKey = postId ? `post:${postId}` : (targetId ? `activity:${targetId}` : `activity:${Date.now()}`);
 

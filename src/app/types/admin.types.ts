@@ -27,6 +27,13 @@ export interface AdminActivityLogRow {
   metadata: Record<string, unknown> | null;
   ip_address: string | null;
   created_at: string;
+  admin_username?: string | null;
+  admin_name?: string | null;
+  admin_email?: string | null;
+  target_username?: string | null;
+  target_full_name?: string | null;
+  target_email?: string | null;
+  target_avatar?: string | null;
 }
 
 export interface DashboardKpis {

@@ -23,12 +23,37 @@ export interface AdminReportPost {
   is_deleted?: boolean;
 }
 
+export interface AdminReportMessage {
+  id: string;
+  conversation_id: string | null;
+  sender_id: string | null;
+  sender_username?: string | null;
+  sender_name?: string | null;
+  sender_avatar?: string | null;
+  content: string;
+  image_url?: string | null;
+  created_at: string;
+  is_deleted?: boolean;
+  is_reported?: boolean;
+}
+
+export interface AdminReportMessageDetail extends AdminReportMessage {
+  /** A few messages around the reported one (oldest -> newest), including the reported message itself. */
+  context: AdminReportMessage[];
+}
+
 export interface AdminReportListItem {
   id: string;
   reporter_id: string | null;
   reporter_username: string | null;
+  reporter_name?: string | null;
+  reporter_email?: string | null;
+  reporter_avatar?: string | null;
   reported_user_id: string | null;
   reported_username: string | null;
+  reported_name?: string | null;
+  reported_email?: string | null;
+  reported_avatar?: string | null;
   violation_id: string;
   violation_label: string;
   category_id: string;
@@ -36,6 +61,8 @@ export interface AdminReportListItem {
   conversation_id: string | null;
   post_id?: string | null;
   post?: AdminReportPost | null;
+  message_id?: string | null;
+  message?: AdminReportMessageDetail | null;
   status: ReportStatus;
   internal_notes: string | null;
   created_at: string;
@@ -47,7 +74,7 @@ export interface ListReportsParams {
   categoryId?: string;
   cursor?: string | null;
   limit?: number;
-  targetType?: 'all' | 'post' | 'user';
+  targetType?: 'all' | 'post' | 'user' | 'message';
 }
 
 export interface PaginatedReportList {

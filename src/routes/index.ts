@@ -21,6 +21,13 @@ import { anonymityMiddleware } from '../app/middleware/anonymity.middleware';
 const router = Router();
 
 router.use(maintenanceMiddleware);
+
+// Admin routes and admin activity logs MUST NOT be masked by anonymity middleware
+router.use('/admin', adminRoutes);
+router.use('/activity-logs', activityLogRoutes);
+router.use('/activity-log', activityLogRoutes);
+
+// Anonymity middleware for general user/student-facing endpoints
 router.use(anonymityMiddleware);
 
 router.use('/health', healthRoutes);
@@ -38,9 +45,6 @@ router.use('/match', matchRoutes);
 router.use('/matchmaking', matchRoutes);
 router.use('/follows', followRoutes);
 router.use('/follow', followRoutes);
-router.use('/admin', adminRoutes);
-router.use('/activity-logs', activityLogRoutes);
-router.use('/activity-log', activityLogRoutes);
 router.use('/games', gameRoutes);
 
 

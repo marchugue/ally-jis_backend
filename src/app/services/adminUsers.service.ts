@@ -124,7 +124,10 @@ export async function listPendingVerifications(): Promise<PendingVerificationIte
     console.error('Error fetching pending verifications:', error);
     throw error;
   }
-  return (data ?? []) as PendingVerificationItem[];
+  return ((data ?? []) as PendingVerificationItem[]).map((u) => ({
+    ...u,
+    full_name: adminUsersModel.resolveRealFullName(u),
+  }));
 }
 
 export async function approveStudentVerification(adminId: string, userId: string, ip?: string): Promise<void> {

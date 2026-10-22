@@ -21,6 +21,15 @@ export function emitToUser(userId: string, event: string, payload: unknown): voi
   io?.to(`user:${userId}`).emit(event, payload);
 }
 
+/** Broadcast an event to all connected sockets across all platforms. */
+export function broadcast(event: string, payload: unknown): void {
+  io?.emit(event, payload);
+}
+
+export function getSocketServer(): SocketIOServer | null {
+  return io;
+}
+
 /** Password-reset watch room — clients join with tracking token (no login required). */
 export function emitToPasswordResetTracking(trackingToken: string, event: string, payload: unknown): void {
   io?.to(`password_reset:${trackingToken}`).emit(event, payload);
