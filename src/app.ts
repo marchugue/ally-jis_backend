@@ -6,6 +6,11 @@ import { errorHandler } from './app/middleware/error.middleware';
 import { env } from './config/env';
 
 const app = express();
+
+// Trust reverse proxy (e.g. Render, Cloudflare, Heroku) so that req.ip and
+// X-Forwarded-For headers are properly recognized and express-rate-limit works accurately.
+app.set('trust proxy', 1);
+
 app.use((req, res, next) => {
   console.log(`→ ${req.method} ${req.path}`);
   next();

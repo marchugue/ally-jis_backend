@@ -23,6 +23,7 @@ const loginLimiter = rateLimit({
   message: { message: 'Too many login attempts. Please wait 15 minutes before trying again.' },
   standardHeaders: true,
   legacyHeaders: false,
+  validate: { xForwardedForHeader: false },
 });
 
 /** 3 OTP send/resend attempts per 10 minutes per IP */
@@ -32,6 +33,7 @@ const otpSendLimiter = rateLimit({
   message: { message: 'Too many OTP requests. Please wait 10 minutes before requesting another code.' },
   standardHeaders: true,
   legacyHeaders: false,
+  validate: { xForwardedForHeader: false },
 });
 
 /** 10 OTP verify attempts per 10 minutes per IP */
@@ -41,6 +43,7 @@ const otpVerifyLimiter = rateLimit({
   message: { message: 'Too many verification attempts. Please wait 10 minutes.' },
   standardHeaders: true,
   legacyHeaders: false,
+  validate: { xForwardedForHeader: false },
 });
 
 /** 3 registration attempts per hour per IP */
@@ -50,6 +53,7 @@ const registerLimiter = rateLimit({
   message: { message: 'Too many registration attempts from this IP. Please try again in an hour.' },
   standardHeaders: true,
   legacyHeaders: false,
+  validate: { xForwardedForHeader: false },
 });
 
 /** 10 registration cancels per hour per IP — prevents brute-force account enumeration */
@@ -59,6 +63,7 @@ const cancelRegistrationLimiter = rateLimit({
   message: { message: 'Too many cancel requests from this IP. Please try again later.' },
   standardHeaders: true,
   legacyHeaders: false,
+  validate: { xForwardedForHeader: false },
 });
 
 // ─── Auth Routes ─────────────────────────────────────────────────────────────
