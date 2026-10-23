@@ -6,6 +6,7 @@ import * as adminUsersController from '../app/controller/adminUsers.controller';
 import * as adminReportsController from '../app/controller/adminReports.controller';
 import * as adminSearchController from '../app/controller/adminSearch.controller';
 import * as adminAvatarsController from '../app/controller/adminAvatars.controller';
+import * as adminSeederController from '../app/controller/adminSeeder.controller';
 import { authMiddleware } from '../app/middleware/auth.middleware';
 import { requireAdminRole, requirePermission } from '../app/middleware/admin.middleware';
 
@@ -83,5 +84,9 @@ router.delete(
   requirePermission('manage_settings'),
   adminAvatarsController.deletePresetAvatar,
 );
+
+// ─── Conversation Seeder (Mobile Admin Tool) ──────────────────────────────
+router.get('/seeder/conversations', adminSeederController.listConversationsForSeeder);
+router.post('/seeder/points', adminSeederController.seedConversationPoints);
 
 export default router;

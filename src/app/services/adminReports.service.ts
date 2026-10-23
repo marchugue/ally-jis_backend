@@ -1,5 +1,6 @@
 // src/app/services/adminReports.service.ts
 
+import { supabaseAdmin } from '../../config/supabase';
 import * as adminReportsModel from '../models/adminReports.model';
 import * as adminModel from '../models/admin.model';
 import * as adminUsersService from './adminUsers.service';
@@ -82,6 +83,11 @@ export async function deleteReportedPost(adminId: string, reportId: string, expl
   if (!postId) throw new HttpError('Report is not linked to any post', 400);
 
   await feedModel.deletePost(postId);
+
+  await supabaseAdmin
+    .from('reported_post_snapshots')
+    .update({ is_deleted_from_feed: true })
+    .eq('report_id', reportId);
 
   const currentNotes = report.internal_notes || '';
   const deletionNote = `[Post deleted by Admin at ${new Date().toISOString()}]`;

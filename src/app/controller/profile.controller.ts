@@ -120,6 +120,16 @@ export const checkUsername = asyncHandler(async (req: Request, res: Response) =>
   res.status(200).json(result);
 });
 
+// GET /profiles/check-email?email=x&excludeId=y
+export const checkEmail = asyncHandler(async (req: Request, res: Response) => {
+  const email = String(req.query.email ?? '');
+  const excludeId = typeof req.query.excludeId === 'string' ? req.query.excludeId : null;
+
+  const { checkEmailAvailability } = await import('../services/auth.service');
+  const result = await checkEmailAvailability(email, excludeId);
+  res.status(200).json(result);
+});
+
 // PATCH /profiles/me
 export const updateMe = asyncHandler(async (req: Request, res: Response) => {
   const payload = req.body as Partial<UpdateProfilePayload>;

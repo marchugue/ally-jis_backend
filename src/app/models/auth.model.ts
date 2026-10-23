@@ -26,11 +26,13 @@ export interface CreateAuthUserInput {
 export interface SupabaseAuthUser {
   id: string;
   email?: string;
+  email_confirmed_at?: string | null;
   user_metadata?: Record<string, unknown>;
   app_metadata?: Record<string, unknown>;
   aud?: string;
   created_at?: string;
 }
+
 
 export interface SupabaseSession {
   access_token: string;
@@ -215,7 +217,7 @@ export async function findProfileById(id: string): Promise<ProfileRow | null> {
   const { data, error } = await supabaseAdmin
     .from('profiles')
     .select(
-      'id, email, full_name, username, avatar_url, bio, department, course, year_level, interests, organizations, created_at, email_type, chmsu_auto_verified, pending_student_verification, student_verification_status, admin_verified'
+      'id, email, full_name, username, avatar_url, bio, department, course, year_level, interests, organizations, created_at, email_type, chmsu_auto_verified, pending_student_verification, student_verification_status, admin_verified, student_id_url, student_id_back_url'
     )
     .eq('id', id)
     .maybeSingle();

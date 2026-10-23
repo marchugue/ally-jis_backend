@@ -54,6 +54,8 @@ function buildAuthSession(args: {
               year_level: profile.year_level ?? user.user_metadata?.year_level,
               interests: profile.interests ?? user.user_metadata?.interests ?? [],
               organizations: profile.organizations ?? user.user_metadata?.organizations ?? [],
+              student_id_url: profile.student_id_url ?? (user.user_metadata?.student_id_url as string | null) ?? null,
+              student_id_back_url: profile.student_id_back_url ?? (user.user_metadata?.student_id_back_url as string | null) ?? null,
               // Verification gate fields — read by ProtectedRoute / _layout.tsx
               email_type: profile.email_type ?? user.user_metadata?.email_type ?? null,
               chmsu_auto_verified: profile.chmsu_auto_verified ?? false,
@@ -75,10 +77,17 @@ function buildAuthSession(args: {
                 user.user_metadata?.onboarding_complete === 'true' ||
                 (profile.course && profile.department && profile.year_level) ||
                 (user.user_metadata?.course && user.user_metadata?.department && user.user_metadata?.year_level) ||
-                (profile.course && profile.department && profile.year_level && profile.username && Array.isArray(profile.interests) && profile.interests.length >= 3)
+                (profile.course && profile.department) ||
+                (profile.course && (profile.department || profile.year_level)) ||
+                (profile.username && (profile.course || profile.department) && (profile.chmsu_auto_verified || profile.admin_verified || profile.student_verification_status === 'approved'))
               ),
             }
           : {
+              email_type: user.email?.toLowerCase().endsWith('@chmsu.edu.ph') ? 'chmsu' : (user.user_metadata?.email_type ?? 'external'),
+              chmsu_auto_verified: user.email?.toLowerCase().endsWith('@chmsu.edu.ph') ?? false,
+              is_approved: user.email?.toLowerCase().endsWith('@chmsu.edu.ph') ?? false,
+              student_id_url: (user.user_metadata?.student_id_url as string | null) ?? null,
+              student_id_back_url: (user.user_metadata?.student_id_back_url as string | null) ?? null,
               onboarding_complete: Boolean(
                 user.user_metadata?.onboarding_complete === true ||
                 user.user_metadata?.onboarding_complete === 'true' ||
@@ -89,6 +98,7 @@ function buildAuthSession(args: {
       app_metadata: user.app_metadata,
       aud: user.aud,
       created_at: user.created_at,
+      email_confirmed_at: user.email_confirmed_at || new Date().toISOString(),
     },
     accessToken: session.access_token,
     refreshToken: session.refresh_token,
@@ -227,6 +237,81 @@ export async function register(payload: RegisterPayload): Promise<RegisterRespon
     otpExpiresAt: newOtpRow?.expires_at ?? null,
     resendCooldownSeconds: Number(process.env.OTP_RESEND_COOLDOWN_SECONDS ?? 60),
   };
+}
+
+/**
+ * Checks whether an email is available for registration.
+ * Declines immediately if an active or verified account with this email exists.
+ */
+export async function checkEmailAvailability(
+  email: string,
+  excludeId?: string | null
+): Promise<{ available: boolean; message?: string }> {
+  const cleanEmail = email.trim().toLowerCase();
+  if (!cleanEmail) {
+    return { available: false, message: 'Email address is required.' };
+  }
+
+  // Basic regex format check
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+    return { available: false, message: 'Please enter a valid email address.' };
+  }
+
+  // 1. Check profiles table for an existing user with this email
+  let query = supabaseAdmin.from('profiles').select('id').ilike('email', cleanEmail).limit(1);
+  if (excludeId) {
+    query = query.neq('id', excludeId);
+  }
+  const { data: profileData, error: profileError } = await query;
+  if (profileError) throw profileError;
+
+  if (profileData && profileData.length > 0) {
+    const existingId = profileData[0].id;
+    // Check if this is an expired unverified registration that will be auto-purged on registration
+    const otpStatus = await otpService.getOtpStatus(existingId);
+    if (otpStatus.exists && !otpStatus.verified && otpStatus.isExpired) {
+      // It's expired unverified — safe to allow registration
+      return { available: true };
+    }
+    return {
+      available: false,
+      message: 'An account with this email already exists. Please log in or use a different email.',
+    };
+  }
+
+  // 2. Check if there's an active (non-expired) unverified registration in email_otps
+  const existingOtp = await otpModel.findOtpByEmail(cleanEmail);
+  if (existingOtp && !existingOtp.verified_at) {
+    const otpExpired = new Date() > new Date(existingOtp.expires_at);
+    if (!otpExpired) {
+      return {
+        available: false,
+        message: 'A registration for this email is currently pending verification.',
+      };
+    }
+  }
+
+  // 3. Fallback: check Supabase Auth users directly
+  try {
+    const { data: userList } = await supabaseAdmin.auth.admin.listUsers();
+    const existingAuthUser = userList?.users?.find(
+      (u) => u.email?.toLowerCase().trim() === cleanEmail && (!excludeId || u.id !== excludeId)
+    );
+    if (existingAuthUser) {
+      const otpStatus = await otpService.getOtpStatus(existingAuthUser.id);
+      if (otpStatus.exists && !otpStatus.verified && otpStatus.isExpired) {
+        return { available: true };
+      }
+      return {
+        available: false,
+        message: 'An account with this email already exists. Please log in or use a different email.',
+      };
+    }
+  } catch (err) {
+    console.warn('[checkEmailAvailability] Error checking auth users:', err);
+  }
+
+  return { available: true };
 }
 
 export async function login(payload: LoginPayload): Promise<AuthSession> {
@@ -667,4 +752,253 @@ export async function saveStudentIdUpload(
   }
 
   return { url: publicUrl, side };
+}
+
+/**
+ * Verifies a Google OAuth session with Supabase, evaluates whether the user's email
+ * belongs to CHMSU (@chmsu.edu.ph) or is an external/personal email (@gmail.com, etc.),
+ * syncs their profiles record, and returns the full AuthSession.
+ *
+ * Rules:
+ * - If email ends with @chmsu.edu.ph:
+ *   - Auto-verified institutional email (email_type: 'chmsu', chmsu_auto_verified: true, is_approved: true)
+ *   - No student ID upload needed.
+ * - If email does NOT end with @chmsu.edu.ph (e.g. personal @gmail.com):
+ *   - External student account (email_type: 'external', chmsu_auto_verified: false)
+ *   - Still requires student verification (student ID / COR upload + admin approval)!
+ *   - Cannot bypass student verification.
+ */
+export async function handleOAuthLogin(input: {
+  accessToken: string;
+  refreshToken?: string;
+}): Promise<AuthSession> {
+  const { accessToken, refreshToken } = input;
+  if (!accessToken) {
+    throw new HttpError('Access token is required', 400);
+  }
+
+  // 1. Verify user with Supabase Auth
+  const { data, error } = await supabaseAdmin.auth.getUser(accessToken);
+  if (error || !data?.user) {
+    throw new HttpError('Invalid or expired OAuth token', 401);
+  }
+
+  const user = data.user as SupabaseAuthUser;
+  const rawEmail = (user.email ?? '').toLowerCase().trim();
+  if (!rawEmail) {
+    throw new HttpError('OAuth account does not have an associated email address.', 400);
+  }
+
+  // 2. Evaluate CHMSU institutional email vs personal email
+  const isChmsuEmail = rawEmail.endsWith('@chmsu.edu.ph');
+  const emailType = isChmsuEmail ? 'chmsu' : 'external';
+
+  // 3. Find existing profile or create one if new OAuth user
+  let profile = await authModel.findProfileById(user.id);
+
+  // If not found by user.id, check if a profile already exists with this email (e.g. from previous version)
+  if (!profile) {
+    const { data: existingProfileByEmail } = await supabaseAdmin
+      .from('profiles')
+      .select('*')
+      .ilike('email', rawEmail)
+      .maybeSingle();
+
+    if (existingProfileByEmail) {
+      if (existingProfileByEmail.id === user.id) {
+        profile = existingProfileByEmail as ProfileRow;
+      } else {
+        // Profile exists under previous version ID. Migrate/link to current user.id
+        const { data: updatedProfile, error: updateIdErr } = await supabaseAdmin
+          .from('profiles')
+          .update({ id: user.id })
+          .eq('id', existingProfileByEmail.id)
+          .select('*')
+          .maybeSingle();
+
+        if (!updateIdErr && updatedProfile) {
+          profile = updatedProfile as ProfileRow;
+        } else {
+          console.warn('[handleOAuthLogin] Direct ID update notice, re-pointing child relations:', updateIdErr?.message);
+          try {
+            await Promise.allSettled([
+              supabaseAdmin.from('posts').update({ author_id: user.id }).eq('author_id', existingProfileByEmail.id),
+              supabaseAdmin.from('post_comments').update({ author_id: user.id }).eq('author_id', existingProfileByEmail.id),
+              supabaseAdmin.from('post_likes').update({ user_id: user.id }).eq('user_id', existingProfileByEmail.id),
+              supabaseAdmin.from('comment_likes').update({ user_id: user.id }).eq('user_id', existingProfileByEmail.id),
+              supabaseAdmin.from('conversation_members').update({ user_id: user.id }).eq('user_id', existingProfileByEmail.id),
+              supabaseAdmin.from('messages').update({ sender_id: user.id }).eq('sender_id', existingProfileByEmail.id),
+              supabaseAdmin.from('follows').update({ follower_id: user.id }).eq('follower_id', existingProfileByEmail.id),
+              supabaseAdmin.from('follows').update({ followed_id: user.id }).eq('followed_id', existingProfileByEmail.id),
+              supabaseAdmin.from('blocks').update({ blocker_id: user.id }).eq('blocker_id', existingProfileByEmail.id),
+              supabaseAdmin.from('blocks').update({ blocked_id: user.id }).eq('blocked_id', existingProfileByEmail.id),
+            ]);
+
+            const { data: retryUpdated, error: retryErr } = await supabaseAdmin
+              .from('profiles')
+              .update({ id: user.id })
+              .eq('id', existingProfileByEmail.id)
+              .select('*')
+              .maybeSingle();
+
+            if (!retryErr && retryUpdated) {
+              profile = retryUpdated as ProfileRow;
+            }
+          } catch (cascadeErr) {
+            console.warn('[handleOAuthLogin] Cascade migration warning:', cascadeErr);
+          }
+
+          // Fallback if still not migrated: release old email and insert new profile preserving all previous data
+          if (!profile) {
+            await supabaseAdmin
+              .from('profiles')
+              .update({ email: `${existingProfileByEmail.email}.migrated.${Date.now()}` })
+              .eq('id', existingProfileByEmail.id);
+
+            const migratedData: Record<string, unknown> = {
+              id: user.id,
+              email: rawEmail,
+              username: existingProfileByEmail.username,
+              full_name: existingProfileByEmail.full_name || (user.user_metadata?.full_name as string) || (user.user_metadata?.name as string),
+              avatar_url: existingProfileByEmail.avatar_url || (user.user_metadata?.avatar_url as string),
+              bio: existingProfileByEmail.bio,
+              department: existingProfileByEmail.department,
+              course: existingProfileByEmail.course,
+              year_level: existingProfileByEmail.year_level,
+              interests: existingProfileByEmail.interests,
+              organizations: existingProfileByEmail.organizations,
+              student_id_url: existingProfileByEmail.student_id_url,
+              student_id_back_url: existingProfileByEmail.student_id_back_url,
+              email_type: emailType,
+              chmsu_auto_verified: isChmsuEmail,
+              pending_student_verification: !isChmsuEmail,
+              student_verification_status: isChmsuEmail ? 'approved' : 'pending',
+              admin_verified: existingProfileByEmail.admin_verified ?? false,
+            };
+
+            const { data: newRow } = await supabaseAdmin
+              .from('profiles')
+              .insert(migratedData)
+              .select('*')
+              .maybeSingle();
+
+            profile = (newRow as ProfileRow) ?? existingProfileByEmail;
+          }
+        }
+      }
+    }
+  }
+
+  if (!profile) {
+    // Generate base username from user metadata or email local part
+    const rawUsernameBase = (
+      (user.user_metadata?.username as string) ||
+      (user.user_metadata?.full_name as string) ||
+      (user.user_metadata?.name as string) ||
+      rawEmail.split('@')[0]
+    )
+      .toLowerCase()
+      .replace(/[^a-z0-9._]/g, '')
+      .slice(0, 20) || 'student';
+
+    let uniqueUsername = rawUsernameBase;
+    let counter = 1;
+    while (await authModel.findProfileByUsername(uniqueUsername)) {
+      uniqueUsername = `${rawUsernameBase.slice(0, 15)}${counter}`;
+      counter++;
+    }
+
+    const newProfileData: Record<string, unknown> = {
+      id: user.id,
+      email: rawEmail,
+      username: uniqueUsername,
+      full_name: (user.user_metadata?.full_name as string) || (user.user_metadata?.name as string) || uniqueUsername,
+      avatar_url: (user.user_metadata?.avatar_url as string) || (user.user_metadata?.picture as string) || null,
+      email_type: emailType,
+      chmsu_auto_verified: isChmsuEmail,
+      pending_student_verification: !isChmsuEmail,
+      student_verification_status: isChmsuEmail ? 'approved' : 'pending',
+      admin_verified: false,
+    };
+
+    const { data: insertedProfile, error: insertErr } = await supabaseAdmin
+      .from('profiles')
+      .insert(newProfileData)
+      .select('*')
+      .single();
+
+    if (insertErr) {
+      console.warn('[handleOAuthLogin] Profile insert notice (may already exist via trigger):', insertErr.message);
+      profile = await authModel.findProfileById(user.id);
+    } else {
+      profile = insertedProfile as ProfileRow;
+    }
+  }
+
+  // If profile exists, ensure verification flags reflect the verified email domain
+  if (profile) {
+    const updates: Record<string, unknown> = {};
+    if (profile.email_type !== emailType) {
+      updates.email_type = emailType;
+    }
+    if (isChmsuEmail && !profile.chmsu_auto_verified) {
+      updates.chmsu_auto_verified = true;
+      updates.student_verification_status = 'approved';
+      updates.pending_student_verification = false;
+    } else if (!isChmsuEmail && profile.chmsu_auto_verified) {
+      updates.chmsu_auto_verified = false;
+      if (!profile.admin_verified && profile.student_verification_status !== 'approved') {
+        updates.pending_student_verification = true;
+        updates.student_verification_status = 'pending';
+      }
+    }
+    if (Object.keys(updates).length > 0) {
+      await supabaseAdmin.from('profiles').update(updates).eq('id', profile.id);
+      profile = { ...profile, ...updates };
+    }
+  }
+
+  // 4. Ensure Supabase auth confirms the email for all OAuth users and clear any pending email_otps
+  try {
+    await supabaseAdmin.auth.admin.updateUserById(user.id, { email_confirm: true });
+  } catch (e) {
+    console.warn('[handleOAuthLogin] Could not auto-confirm OAuth auth email:', e);
+  }
+
+  // Clear/verify any existing OTP rows for this user / email so they are never prompted for OTP
+  try {
+    await supabaseAdmin
+      .from('email_otps')
+      .update({ verified_at: new Date().toISOString() })
+      .or(`user_id.eq.${user.id},email.eq.${rawEmail}`);
+  } catch (otpErr) {
+    console.warn('[handleOAuthLogin] Could not clear email_otps for OAuth user:', otpErr);
+  }
+
+  // 5. Build and return standard AuthSession
+  const sessionData: SupabaseSession = {
+    access_token: accessToken,
+    refresh_token: refreshToken,
+    expires_at: Math.floor(Date.now() / 1000) + 3600,
+  };
+
+  const authSession = buildAuthSession({
+    user,
+    session: sessionData,
+    profile,
+  });
+
+  // Record login activity
+  try {
+    const { recordActivity } = await import('./activityLog.service');
+    recordActivity({
+      userId: user.id,
+      bucket: 'security',
+      action: 'auth:login',
+      title: 'Logged in via Google OAuth',
+      targetType: 'security',
+    });
+  } catch {}
+
+  return authSession;
 }

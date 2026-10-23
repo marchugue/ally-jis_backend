@@ -103,6 +103,8 @@ async function ensureViolation(violationId: string): Promise<string> {
   return tax.id;
 }
 
+import { resolveRealFullName } from './adminUsers.model';
+
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export async function createReport({
@@ -117,33 +119,29 @@ export async function createReport({
   const storedViolationId = await ensureViolation(violationId);
   let resolvedConversationId = conversationId ?? null;
 
+  const safeMessageId = messageId && UUID_RE.test(messageId) ? messageId : null;
+  const safePostId = postId && UUID_RE.test(postId) ? postId : null;
+  const trimmedNotes = notes ? notes.trim() : '';
+
+  if (safeMessageId && !resolvedConversationId) {
+    const { data: msg } = await supabaseAdmin
+      .from('messages')
+      .select('conversation_id')
+      .eq('id', safeMessageId)
+      .maybeSingle();
+    resolvedConversationId = (msg?.conversation_id as string | undefined) ?? null;
+  }
+
   const insertPayload: Record<string, any> = {
     reporter_id: reporterId,
     reported_user_id: reportedUserId,
     violation_id: storedViolationId,
     conversation_id: resolvedConversationId,
+    message_id: safeMessageId,
+    post_id: safePostId,
+    reporter_notes: trimmedNotes || null,
+    internal_notes: null,
   };
-
-  const safeMessageId = messageId && UUID_RE.test(messageId) ? messageId : null;
-  const safePostId = postId && UUID_RE.test(postId) ? postId : null;
-  const trimmedNotes = notes ? notes.trim() : '';
-
-  if (safeMessageId) {
-    if (!resolvedConversationId) {
-      const { data: msg } = await supabaseAdmin
-        .from('messages')
-        .select('conversation_id')
-        .eq('id', safeMessageId)
-        .maybeSingle();
-      resolvedConversationId = (msg?.conversation_id as string | undefined) ?? null;
-      insertPayload.conversation_id = resolvedConversationId;
-    }
-    insertPayload.internal_notes = `[MSG:${safeMessageId}]${trimmedNotes ? ' ' + trimmedNotes : ''}`;
-  } else if (safePostId) {
-    insertPayload.internal_notes = `[POST:${safePostId}]${trimmedNotes ? ' ' + trimmedNotes : ''}`;
-  } else if (trimmedNotes) {
-    insertPayload.internal_notes = trimmedNotes;
-  }
 
   const { data, error } = await supabaseAdmin
     .from('reports')
@@ -152,6 +150,136 @@ export async function createReport({
     .single();
 
   if (error) throw error;
+
+  // ── Snapshot capture into dedicated tables ──────────────────────────────
+  if (safeMessageId) {
+    try {
+      const { data: msg } = await supabaseAdmin
+        .from('messages')
+        .select('id, conversation_id, sender_id, content, image_url, created_at, is_deleted, deleted_at')
+        .eq('id', safeMessageId)
+        .maybeSingle();
+
+      const senderId = msg?.sender_id || reportedUserId;
+      let senderProfile = null;
+      if (senderId) {
+        const { data: p } = await supabaseAdmin
+          .from('profiles')
+          .select('id, username, full_name, avatar_url, email')
+          .eq('id', senderId)
+          .maybeSingle();
+        senderProfile = p;
+      }
+
+      let contextMessages: any[] = [];
+      const convId = resolvedConversationId || msg?.conversation_id;
+      if (convId && msg) {
+        const [beforeRes, afterRes] = await Promise.all([
+          supabaseAdmin
+            .from('messages')
+            .select('id, conversation_id, sender_id, content, image_url, created_at, is_deleted, deleted_at')
+            .eq('conversation_id', convId)
+            .lt('created_at', msg.created_at)
+            .order('created_at', { ascending: false })
+            .limit(4),
+          supabaseAdmin
+            .from('messages')
+            .select('id, conversation_id, sender_id, content, image_url, created_at, is_deleted, deleted_at')
+            .eq('conversation_id', convId)
+            .gt('created_at', msg.created_at)
+            .order('created_at', { ascending: true })
+            .limit(4),
+        ]);
+
+        const rawContext = [...(beforeRes.data || []).reverse(), msg, ...(afterRes.data || [])];
+        const contextSenderIds = [...new Set(rawContext.map((m: any) => m.sender_id).filter(Boolean))];
+        const { data: contextProfiles } = contextSenderIds.length
+          ? await supabaseAdmin.from('profiles').select('id, username, full_name, avatar_url, email').in('id', contextSenderIds)
+          : { data: [] };
+        const pMap = new Map((contextProfiles || []).map((p: any) => [p.id, p]));
+
+        contextMessages = rawContext.map((m: any) => {
+          const p = pMap.get(m.sender_id);
+          return {
+            id: m.id,
+            conversation_id: m.conversation_id,
+            sender_id: m.sender_id,
+            sender_username: p?.username || null,
+            sender_name: resolveRealFullName(p),
+            sender_avatar: p?.avatar_url || null,
+            content: m.content || '',
+            image_url: m.image_url || null,
+            created_at: m.created_at,
+            is_deleted: Boolean(m.is_deleted || m.deleted_at),
+            is_reported: m.id === safeMessageId,
+          };
+        });
+      }
+
+      await supabaseAdmin.from('reported_message_snapshots').insert({
+        report_id: data.id,
+        message_id: safeMessageId,
+        conversation_id: convId,
+        sender_id: senderId,
+        sender_username: senderProfile?.username || null,
+        sender_name: resolveRealFullName(senderProfile),
+        sender_avatar: senderProfile?.avatar_url || null,
+        content: msg?.content || '',
+        image_url: msg?.image_url || null,
+        message_created_at: msg?.created_at || data.created_at,
+        context_messages: contextMessages,
+        is_deleted_in_chat: Boolean(msg?.is_deleted || msg?.deleted_at),
+      });
+    } catch (snapErr) {
+      console.error('[moderation.createReport] Failed to capture message snapshot:', snapErr);
+    }
+  } else if (safePostId) {
+    try {
+      const [postRes, mediaRes] = await Promise.all([
+        supabaseAdmin
+          .from('posts')
+          .select('id, author_id, content, audience, likes_count, comments_count, created_at')
+          .eq('id', safePostId)
+          .maybeSingle(),
+        supabaseAdmin
+          .from('post_media')
+          .select('id, post_id, url, position')
+          .eq('post_id', safePostId)
+          .order('position', { ascending: true }),
+      ]);
+
+      const post = postRes.data;
+      const authorId = post?.author_id || reportedUserId;
+      let authorProfile = null;
+      if (authorId) {
+        const { data: p } = await supabaseAdmin
+          .from('profiles')
+          .select('id, username, full_name, avatar_url, email')
+          .eq('id', authorId)
+          .maybeSingle();
+        authorProfile = p;
+      }
+
+      await supabaseAdmin.from('reported_post_snapshots').insert({
+        report_id: data.id,
+        post_id: safePostId,
+        author_id: authorId,
+        author_username: authorProfile?.username || null,
+        author_name: resolveRealFullName(authorProfile),
+        author_avatar: authorProfile?.avatar_url || null,
+        content: post?.content || '',
+        audience: post?.audience || 'public',
+        media: mediaRes.data || [],
+        likes_count: post?.likes_count || 0,
+        comments_count: post?.comments_count || 0,
+        post_created_at: post?.created_at || data.created_at,
+        is_deleted_from_feed: !post,
+      });
+    } catch (snapErr) {
+      console.error('[moderation.createReport] Failed to capture post snapshot:', snapErr);
+    }
+  }
+
   return data as ReportRow;
 }
 

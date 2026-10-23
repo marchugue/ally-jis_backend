@@ -27,6 +27,15 @@ export const register = asyncHandler(async (req: Request, res: Response) => {
   res.status(result.resumePending ? 200 : 201).json(result);
 });
 
+// GET /api/auth/check-email?email=x&excludeId=y
+export const checkEmail = asyncHandler(async (req: Request, res: Response) => {
+  const email = String(req.query.email ?? '');
+  const excludeId = typeof req.query.excludeId === 'string' ? req.query.excludeId : null;
+
+  const result = await authService.checkEmailAvailability(email, excludeId);
+  res.status(200).json(result);
+});
+
 export const login = asyncHandler(async (req: Request, res: Response) => {
   const { email, password } = req.body as LoginPayload;
   try {
@@ -338,4 +347,38 @@ export const cancelRegistration = asyncHandler(async (req: Request, res: Respons
 
   await authService.cancelRegistration({ userId, email });
   res.status(200).json({ success: true, message: 'Unverified registration cancelled' });
+});
+
+import { supabaseAdmin } from '../../config/supabase';
+
+/**
+ * POST /api/auth/oauth/google
+ * Authenticates or registers a user via Google OAuth, verifies CHMSU email status,
+ * and sets the session cookie. Supports both direct accessToken/refreshToken and authorization code exchange.
+ */
+export const oauthGoogle = asyncHandler(async (req: Request, res: Response) => {
+  let { accessToken, refreshToken, code } = req.body as {
+    accessToken?: string;
+    refreshToken?: string;
+    code?: string;
+  };
+
+  if (!accessToken && code) {
+    const { data, error } = await supabaseAdmin.auth.exchangeCodeForSession(code);
+    if (error || !data?.session?.access_token) {
+      throw new HttpError(error?.message || 'Could not exchange authorization code.', 400);
+    }
+    accessToken = data.session.access_token;
+    refreshToken = data.session.refresh_token;
+  }
+
+  if (!accessToken) {
+    throw new HttpError('accessToken or code is required', 400);
+  }
+
+  const session = await authService.handleOAuthLogin({ accessToken, refreshToken });
+  if (session.refreshToken) {
+    setRefreshTokenCookie(res, session.refreshToken);
+  }
+  res.status(200).json(session);
 });

@@ -40,6 +40,9 @@ router.post('/batch', authMiddleware, profileController.batch);
 // Auth is optional per the spec — no authMiddleware here.
 router.get('/check-username', profileController.checkUsername);
 
+// GET /api/profiles/check-email?email=x&excludeId=y
+router.get('/check-email', profileController.checkEmail);
+
 // GET /api/profiles/discover
 router.get('/discover', authMiddleware, profileController.discover);
 

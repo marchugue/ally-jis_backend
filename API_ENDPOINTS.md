@@ -242,6 +242,18 @@ Example response:
 { "available": true }
 ```
 
+### GET `/api/auth/check-email?email=x&excludeId=y` (also `/api/profiles/check-email`)
+Checks whether an email address is available for registration.
+
+Example response:
+```json
+{ "available": true }
+```
+or if taken:
+```json
+{ "available": false, "message": "An account with this email already exists. Please log in or use a different email." }
+```
+
 ### GET `/api/profiles`
 Lists profiles, optionally excluding one user.
 

@@ -21,6 +21,8 @@ export interface AdminReportPost {
   created_at: string;
   media?: AdminReportPostMedia[];
   is_deleted?: boolean;
+  is_deleted_from_feed?: boolean;
+  is_preserved?: boolean;
 }
 
 export interface AdminReportMessage {
@@ -34,7 +36,9 @@ export interface AdminReportMessage {
   image_url?: string | null;
   created_at: string;
   is_deleted?: boolean;
+  is_deleted_in_chat?: boolean;
   is_reported?: boolean;
+  is_preserved?: boolean;
 }
 
 export interface AdminReportMessageDetail extends AdminReportMessage {
@@ -64,6 +68,7 @@ export interface AdminReportListItem {
   message_id?: string | null;
   message?: AdminReportMessageDetail | null;
   status: ReportStatus;
+  reporter_notes?: string | null;
   internal_notes: string | null;
   created_at: string;
   reviewed_at: string | null;

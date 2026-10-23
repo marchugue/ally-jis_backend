@@ -52,6 +52,19 @@ function resendCooldownRemaining(lastResentAt: string | null, createdAt: string)
  * Safe to call on both initial send and subsequent fresh generations.
  */
 export async function generateAndSendOtp(userId: string, email: string): Promise<void> {
+  // If user authenticated or registered via OAuth, do NOT send OTP email
+  try {
+    const { data: userRes } = await supabaseAdmin.auth.admin.getUserById(userId);
+    const provider = userRes?.user?.app_metadata?.provider;
+    const providers = (userRes?.user?.app_metadata?.providers as string[]) || [];
+    if (provider === 'google' || providers.includes('google')) {
+      console.log(`[otpService.generateAndSendOtp] Skipping OTP generation for OAuth user ${userId} (${email})`);
+      return;
+    }
+  } catch (checkErr) {
+    console.warn('[otpService.generateAndSendOtp] Error checking provider:', checkErr);
+  }
+
   const code = generateOtpCode();
   const hash = await bcrypt.hash(code, BCRYPT_ROUNDS);
   const expiresAt = new Date(Date.now() + env.OTP_EXPIRY_MINUTES * 60 * 1000);

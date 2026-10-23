@@ -5,6 +5,7 @@ export interface AuthUser {
   app_metadata?: Record<string, unknown>;
   aud?: string;
   created_at?: string;
+  email_confirmed_at?: string | null;
 }
 
 export interface AuthSession {
@@ -33,6 +34,8 @@ export interface ProfileRow {
   pending_student_verification?: boolean | null;
   student_verification_status?: 'pending' | 'approved' | 'rejected' | null;
   admin_verified?: boolean | null;
+  student_id_url?: string | null;
+  student_id_back_url?: string | null;
 }
 
 export interface RegisterPayload {
