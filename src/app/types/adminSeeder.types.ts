@@ -10,6 +10,8 @@ export interface SeederMemberProfile {
 
 export interface SeederMatchDetails {
   id: string;
+  userAId?: string | null;
+  userBId?: string | null;
   matchPoints: number;
   stagePoints: number;
   currentStage: number;
@@ -29,6 +31,8 @@ export interface SeederConversationItem {
   createdAt: string;
   updatedAt: string;
   members: SeederMemberProfile[];
+  userA?: SeederMemberProfile | null;
+  userB?: SeederMemberProfile | null;
   match: SeederMatchDetails | null;
 }
 

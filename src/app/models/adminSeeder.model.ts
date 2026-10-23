@@ -41,7 +41,7 @@ export async function listRecentConversations(limit = 50): Promise<SeederConvers
   // 3. Fetch linked match progression data
   const { data: matches, error: matchesError } = await supabaseAdmin
     .from('matches')
-    .select('id, conversation_id, user_a_id, user_b_id, match_points, stage_points, current_stage, day_streak, revealed_at, status')
+    .select('id, conversation_id, user_a_id, user_b_id, user_a_alias, user_b_alias, user_a_avatar, user_b_avatar, match_points, stage_points, current_stage, day_streak, revealed_at, status')
     .in('conversation_id', convIds);
 
   if (matchesError) throw matchesError;
@@ -67,9 +67,18 @@ export async function listRecentConversations(limit = 50): Promise<SeederConvers
 
     const matchRow = matchMap.get(conv.id);
     let matchDetails: SeederMatchDetails | null = null;
+    let userA: SeederMemberProfile | null = null;
+    let userB: SeederMemberProfile | null = null;
+
     if (matchRow) {
       matchDetails = {
         id: matchRow.id,
+        userAId: matchRow.user_a_id ?? null,
+        userBId: matchRow.user_b_id ?? null,
+        userAAlias: matchRow.user_a_alias ?? null,
+        userBAlias: matchRow.user_b_alias ?? null,
+        userAAvatar: matchRow.user_a_avatar ?? null,
+        userBAvatar: matchRow.user_b_avatar ?? null,
         matchPoints: matchRow.match_points ?? 0,
         stagePoints: matchRow.stage_points ?? 0,
         currentStage: matchRow.current_stage ?? 1,
@@ -77,14 +86,30 @@ export async function listRecentConversations(limit = 50): Promise<SeederConvers
         revealedAt: matchRow.revealed_at ?? null,
         status: matchRow.status ?? 'active',
       };
+
+      if (matchRow.user_a_id) {
+        userA = convMembers.find((m) => m.userId === matchRow.user_a_id) ?? null;
+      }
+      if (matchRow.user_b_id) {
+        userB = convMembers.find((m) => m.userId === matchRow.user_b_id) ?? null;
+      }
+    }
+
+    // Fallback to member order if not resolved by match row
+    if (!userA && convMembers.length > 0) {
+      userA = convMembers[0];
+    }
+    if (!userB && convMembers.length > 1) {
+      userB = convMembers.find((m) => m.userId !== userA?.userId) ?? convMembers[1];
     }
 
     const defaultTitle =
-      convMembers
-        .map((m) => m.fullName)
-        .filter(Boolean)
-        .join(' & ') ||
-      'Direct Conversation';
+      userA && userB
+        ? `${userA.fullName} & ${userB.fullName}`
+        : convMembers
+            .map((m) => m.fullName)
+            .filter(Boolean)
+            .join(' & ') || 'Direct Conversation';
 
     return {
       id: conv.id,
@@ -93,6 +118,8 @@ export async function listRecentConversations(limit = 50): Promise<SeederConvers
       createdAt: conv.created_at,
       updatedAt: conv.updated_at,
       members: convMembers,
+      userA,
+      userB,
       match: matchDetails,
     };
   });
