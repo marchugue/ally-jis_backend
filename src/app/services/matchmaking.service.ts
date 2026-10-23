@@ -152,6 +152,8 @@ export async function acceptMatch(matchId: string, userId: string): Promise<Matc
 
   if (match.status === 'chatting') {
     clearTimer(matchId, 'accept');
+    const newExpiresAt = new Date(Date.now() + CHAT_FIRST_MESSAGE_TIMEOUT_MS).toISOString();
+    await matchModel.updateChatExpiry(matchId, newExpiresAt).catch(() => {});
     scheduleTimer(matchId, 'chat', CHAT_FIRST_MESSAGE_TIMEOUT_MS, () => {
       void handleChatTimeout(matchId);
     });
