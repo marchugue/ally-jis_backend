@@ -449,6 +449,7 @@ export async function createNotification(input: {
       title,
       message: description,
       alertId: targetId || undefined,
+      postId: postId || null,
     });
     return;
   }

@@ -5,6 +5,7 @@ import * as adminModel from '../models/admin.model';
 import { emitToUser } from './realtime.service';
 import * as passwordResetService from './passwordReset.service';
 import * as profileModel from '../models/profile.model';
+import { delCache } from '../utils/cache';
 import { HttpError } from '../types/auth.types';
 import { env } from '../../config/env';
 import type { AdminUserDetail, ListUsersParams, PaginatedUserList } from '../types/adminUsers.types';
@@ -53,11 +54,61 @@ export async function unsuspendUser(adminId: string, userId: string, ip?: string
 
 export async function verifyUser(adminId: string, userId: string, ip?: string): Promise<void> {
   await adminUsersModel.setAdminVerified(userId, true);
+  const { supabaseAdmin } = await import('../../config/supabase');
+  try {
+    await supabaseAdmin.auth.admin.updateUserById(userId, {
+      user_metadata: {
+        student_verification_status: 'approved',
+        admin_verified: true,
+        is_approved: true,
+        pending_student_verification: false,
+      },
+    });
+  } catch (authErr) {
+    console.warn('Could not update auth user_metadata on verify:', authErr);
+  }
+  void delCache([`cache:user:flags:${userId}`, `cache:profile:${userId}`, `cache:profile:summary:${userId}`]);
+  emitToUser(userId, 'user:verification_status', {
+    status: 'approved',
+    is_approved: true,
+    admin_verified: true,
+    pending_student_verification: false,
+  });
+  emitToUser(userId, 'user:updated', {
+    is_approved: true,
+    admin_verified: true,
+    student_verification_status: 'approved',
+  });
   await log(adminId, 'verify_user', userId, ip);
 }
 
 export async function unverifyUser(adminId: string, userId: string, ip?: string): Promise<void> {
   await adminUsersModel.setAdminVerified(userId, false);
+  const { supabaseAdmin } = await import('../../config/supabase');
+  try {
+    await supabaseAdmin.auth.admin.updateUserById(userId, {
+      user_metadata: {
+        student_verification_status: 'pending',
+        admin_verified: false,
+        is_approved: false,
+        pending_student_verification: true,
+      },
+    });
+  } catch (authErr) {
+    console.warn('Could not update auth user_metadata on unverify:', authErr);
+  }
+  void delCache([`cache:user:flags:${userId}`, `cache:profile:${userId}`, `cache:profile:summary:${userId}`]);
+  emitToUser(userId, 'user:verification_status', {
+    status: 'pending',
+    is_approved: false,
+    admin_verified: false,
+    pending_student_verification: true,
+  });
+  emitToUser(userId, 'user:updated', {
+    is_approved: false,
+    admin_verified: false,
+    student_verification_status: 'pending',
+  });
   await log(adminId, 'unverify_user', userId, ip);
 }
 
@@ -155,6 +206,20 @@ export async function approveStudentVerification(adminId: string, userId: string
     console.warn('Could not update auth user_metadata on approval:', authErr);
   }
 
+  void delCache([`cache:user:flags:${userId}`, `cache:profile:${userId}`, `cache:profile:summary:${userId}`]);
+
+  emitToUser(userId, 'user:verification_status', {
+    status: 'approved',
+    is_approved: true,
+    admin_verified: true,
+    pending_student_verification: false,
+  });
+  emitToUser(userId, 'user:updated', {
+    is_approved: true,
+    admin_verified: true,
+    student_verification_status: 'approved',
+  });
+
   await log(adminId, 'approve_student_verification', userId, ip);
 }
 
@@ -182,6 +247,20 @@ export async function rejectStudentVerification(adminId: string, userId: string,
   } catch (authErr) {
     console.warn('Could not update auth user_metadata on rejection:', authErr);
   }
+
+  void delCache([`cache:user:flags:${userId}`, `cache:profile:${userId}`, `cache:profile:summary:${userId}`]);
+
+  emitToUser(userId, 'user:verification_status', {
+    status: 'rejected',
+    is_approved: false,
+    admin_verified: false,
+    pending_student_verification: false,
+  });
+  emitToUser(userId, 'user:updated', {
+    is_approved: false,
+    admin_verified: false,
+    student_verification_status: 'rejected',
+  });
 
   await log(adminId, 'reject_student_verification', userId, ip, { reason });
 }

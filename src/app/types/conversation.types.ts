@@ -37,6 +37,8 @@ export interface MessageRow {
   /** True when the sender deleted the message for everyone. */
   is_deleted?: boolean;
   deleted_at?: string | null;
+  /** True when the message has been flagged by administration for policy violations. */
+  is_flagged?: boolean;
 }
 
 export interface ConversationMemberRow {

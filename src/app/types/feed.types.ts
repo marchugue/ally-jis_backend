@@ -51,6 +51,8 @@ export interface PostWithAuthor extends PostRow {
   liked_by_me: boolean;
   // Ordered by `position`, max 4 entries. Empty array for text-only posts.
   media: PostMediaRow[];
+  is_flagged?: boolean;
+  is_restricted?: boolean;
 }
 
 export interface CommentWithAuthor extends CommentRow {

@@ -785,14 +785,16 @@ export async function dispatchSafetyAlertNotification(input: {
   title: string;
   message: string;
   alertId?: string;
+  postId?: string | null;
 }): Promise<void> {
-  const { recipientId, title, message, alertId } = input;
-  const groupKey = `safety:${alertId || Date.now()}`;
+  const { recipientId, title, message, alertId, postId } = input;
+  const groupKey = `safety:${alertId || postId || Date.now()}`;
   const category: NotificationCategory = 'safety';
   const type = 'admin_warning';
 
   const descWithMeta = formatDescriptionWithMeta(message, {
-    targetId: alertId || null,
+    targetId: alertId || postId || null,
+    postId: postId || null,
     groupKey,
     category,
     unreadCount: 1,
@@ -808,12 +810,14 @@ export async function dispatchSafetyAlertNotification(input: {
     group_key: groupKey,
     category,
     unread_count: 1,
+    post_id: postId || null,
+    target_id: alertId || postId || null,
   };
 
   let insertedId = '';
   const { data, error } = await supabaseAdmin.from('notifications').insert(insertPayload).select('id').maybeSingle();
   if (error) {
-    const fb = { user_id: recipientId, type, title, description: descWithMeta, is_read: false };
+    const fb = { user_id: recipientId, type, title, description: descWithMeta, is_read: false, post_id: postId || null };
     const res = await supabaseAdmin.from('notifications').insert(fb).select('id').maybeSingle();
     insertedId = res.data?.id || '';
   } else {
@@ -830,6 +834,8 @@ export async function dispatchSafetyAlertNotification(input: {
     group_key: groupKey,
     category,
     unread_count: 1,
+    post_id: postId || null,
+    target_id: alertId || postId || null,
     created_at: new Date().toISOString(),
   });
 

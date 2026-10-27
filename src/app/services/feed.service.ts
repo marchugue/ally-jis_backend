@@ -93,8 +93,17 @@ async function hydratePosts(viewerId: string, posts: PostRow[]): Promise<PostWit
       }
     }
 
+    const isFlagged = post.content?.includes('<!--flagged:warning-->') || post.content?.includes('<!--visibility:admin_and_user_only-->');
+    const isRestricted = Boolean(post.content?.includes('<!--visibility:admin_and_user_only-->'));
+    const cleanContent = post.content
+      ? post.content.replace(/<!--visibility:admin_and_user_only-->/g, '').replace(/<!--flagged:warning-->/g, '').trim()
+      : '';
+
     return {
       ...post,
+      content: cleanContent,
+      is_flagged: Boolean(isFlagged),
+      is_restricted: isRestricted,
       author,
       liked_by_me: likedIds.has(post.id),
       media: mediaMap.get(post.id) ?? [],
@@ -182,9 +191,14 @@ export async function listFeed(
     const connectionIds = await feedModel.findAcceptedConnectionIds(viewerId);
 
     // 1. Initial visibility filtering (author itself, public, or accepted connection)
-    const visible = candidates.filter(
-      (post) => post.author_id === viewerId || post.audience === 'public' || connectionIds.has(post.author_id)
-    );
+    // Enforce restricted post visibility: posts flagged with admin warning are visible ONLY to author and admin!
+    const visible = candidates.filter((post) => {
+      const isRestricted = post.content?.includes('<!--visibility:admin_and_user_only-->');
+      if (isRestricted && post.author_id !== viewerId) {
+        return false;
+      }
+      return post.author_id === viewerId || post.audience === 'public' || connectionIds.has(post.author_id);
+    });
 
     // 2. Hydrate posts with authors & media
     let hydrated = await hydratePosts(viewerId, visible);
@@ -335,7 +349,13 @@ export async function listPostsByAuthor(
   }
 
   const candidates = await feedModel.findPostsByAuthor(authorId, limit, options.before);
-  const visible = candidates.filter((post) => post.audience === 'public' || isAlly);
+  const visible = candidates.filter((post) => {
+    const isRestricted = post.content?.includes('<!--visibility:admin_and_user_only-->');
+    if (isRestricted && post.author_id !== viewerId) {
+      return false;
+    }
+    return post.audience === 'public' || isAlly;
+  });
 
   return hydratePosts(viewerId, visible);
 }
@@ -349,8 +369,17 @@ export async function getPostById(viewerId: string, postId: string): Promise<Pos
     throw new HttpError('Post not found', 404);
   }
 
+  const isRestricted = post.content?.includes('<!--visibility:admin_and_user_only-->');
+  if (isRestricted && post.author_id !== viewerId) {
+    const { getUserRole } = await import('../models/admin.model');
+    const role = await getUserRole(viewerId).catch(() => null);
+    if (!role || role === 'student') {
+      throw new HttpError('This post is restricted and visible only to the author and administrators', 403);
+    }
+  }
+
   const visible = await feedModel.canViewPost(viewerId, post.author_id, post.audience);
-  if (!visible) {
+  if (!visible && !isRestricted) {
     throw new HttpError('You do not have permission to view this post', 403);
   }
 

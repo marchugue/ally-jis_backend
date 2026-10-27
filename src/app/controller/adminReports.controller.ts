@@ -71,3 +71,15 @@ export const deleteReportedPost = asyncHandler(async (req: Request, res: Respons
   res.status(200).json({ success: true });
 });
 
+// POST /admin/reports/:reportId/remove-message
+export const removeReportedMessage = asyncHandler(async (req: Request, res: Response) => {
+  await adminReportsService.removeReportedMessage(req.userId as string, String(req.params.reportId), req.ip);
+  res.status(200).json({ success: true });
+});
+
+// POST /admin/reports/:reportId/remove-media
+export const removeReportedMedia = asyncHandler(async (req: Request, res: Response) => {
+  await adminReportsService.removeReportedMedia(req.userId as string, String(req.params.reportId), req.ip);
+  res.status(200).json({ success: true });
+});
+

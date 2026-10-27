@@ -188,7 +188,11 @@ export async function setSuspended(userId: string, suspended: boolean, until: st
 }
 
 export async function setAdminVerified(userId: string, verified: boolean): Promise<void> {
-  const { error } = await supabaseAdmin.from('profiles').update({ admin_verified: verified }).eq('id', userId);
+  const { error } = await supabaseAdmin.from('profiles').update({
+    admin_verified: verified,
+    student_verification_status: verified ? 'approved' : 'pending',
+    pending_student_verification: !verified,
+  }).eq('id', userId);
   if (error) throw error;
   void delCache([`cache:user:flags:${userId}`, `cache:profile:${userId}`, `cache:profile:summary:${userId}`]);
 }

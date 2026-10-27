@@ -62,6 +62,8 @@ router.post('/reports/:reportId/warn', requirePermission('resolve_reports'), adm
 router.post('/reports/:reportId/ban', requirePermission('ban_users'), adminReportsController.banReportedUser);
 router.post('/reports/:reportId/suspend', requirePermission('ban_users'), adminReportsController.suspendReportedUser);
 router.delete('/reports/:reportId/post', requirePermission('resolve_reports'), adminReportsController.deleteReportedPost);
+router.post('/reports/:reportId/remove-message', requirePermission('resolve_reports'), adminReportsController.removeReportedMessage);
+router.post('/reports/:reportId/remove-media', requirePermission('resolve_reports'), adminReportsController.removeReportedMedia);
 
 // ─── Global Search ───────────────────────────────────────────────────────
 router.get('/search', adminSearchController.search);

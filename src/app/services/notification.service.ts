@@ -253,6 +253,29 @@ export function computeNotificationRedirection(
     };
   }
 
+  // 9. Admin warnings & Safety alerts linking to reported post
+  if (type === 'admin_warning' || type === 'safety' || type === 'emergency') {
+    if (pId) {
+      const tree: NotificationRedirectionTree = {
+        postId: pId,
+        parentId: null,
+        childId: null,
+        highlightId: pId,
+      };
+      return {
+        entityType: 'post',
+        targetId: pId,
+        postId: pId,
+        parentId: null,
+        childId: null,
+        route: '/pages/media-preview',
+        params: { postId: pId },
+        webUrl: `/post/${pId}?type=${type}`,
+        tree,
+      };
+    }
+  }
+
   return null;
 }
 

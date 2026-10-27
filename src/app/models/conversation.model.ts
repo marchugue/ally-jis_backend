@@ -380,7 +380,16 @@ export async function attachGameInvites(messages: MessageRow[]): Promise<Message
 async function attachMessageMetadata(messages: MessageRow[]): Promise<MessageRow[]> {
   const withReplies = await attachRepliedMessages(messages);
   const withReactions = await attachReactions(withReplies);
-  return attachGameInvites(withReactions);
+  const withInvites = await attachGameInvites(withReactions);
+  return withInvites.map((m) => {
+    const isFlagged = Boolean(m.content?.includes('<!--flagged:warning-->'));
+    const cleanContent = m.content ? m.content.replace(/<!--flagged:warning-->/g, '').trim() : m.content;
+    return {
+      ...m,
+      content: cleanContent,
+      is_flagged: isFlagged,
+    };
+  });
 }
 
 export interface FindMessagesOptions {
